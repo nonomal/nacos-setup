@@ -46,8 +46,8 @@ function Invoke-StandaloneCleanup {
     if ($Global:CleanupDone) { return }
     $Global:CleanupDone = $true
     
-    # Skip cleanup in detach mode
-    if ($Global:DetachMode) { exit $ExitCode }
+    # Skip cleanup in daemon mode
+    if ($Global:DaemonMode) { exit $ExitCode }
     
     # Stop Nacos if running
     if ($Global:StartedNacosPid -and (Get-Process -Id $Global:StartedNacosPid -ErrorAction SilentlyContinue)) {
@@ -61,7 +61,7 @@ function Invoke-StandaloneCleanup {
         }
         
         Write-Host ""
-        Write-Info "Tip: Use --detach flag to run Nacos in background without auto-cleanup"
+        Write-Info "Tip: Use --daemon flag to run Nacos in background without auto-cleanup"
     }
     
     exit $ExitCode
@@ -141,15 +141,23 @@ function Invoke-StandaloneMode {
     # Configure security
     New-StandaloneSecurity $configFile $Global:AdvancedMode
     
-    # Load and apply datasource configuration
-    $datasourceFile = Get-GlobalDatasourceConfig
-    if ($datasourceFile) {
-        Write-Info "Applying global datasource configuration..."
-        Add-DatasourceConfig $configFile $datasourceFile
-        Write-Info "External database configured"
+    # Load and apply datasource configuration only if explicitly specified via -db-conf
+    if ($env:USE_EXTERNAL_DATASOURCE -eq "true") {
+        $datasourceFile = Load-DefaultDatasourceConfig
+        if ($datasourceFile) {
+            Write-Info "Applying external datasource configuration..."
+            Apply-DatasourceConfig $configFile $datasourceFile
+            Write-Info "External database configured"
+        } else {
+            Write-ErrorMsg "External datasource specified but configuration not found at: $Global:DefaultDatasourceConfig"
+            Write-Host ""
+            Write-Info "To create the configuration, run:"
+            Write-Info "  nacos-setup db-conf edit $Global:DefaultDatasourceConfig"
+            exit 1
+        }
     } else {
         Write-Info "Using embedded Derby database"
-        Write-Info "Tip: Run 'powershell nacos-setup.ps1 --datasource-conf' to configure external database"
+        Write-Info "Tip: Run 'nacos-setup -db-conf' to use external datasource"
     }
     
     Remove-Item "$configFile.bak" -ErrorAction SilentlyContinue
@@ -199,10 +207,10 @@ function Invoke-StandaloneMode {
         
         Show-CompletionInfo $Global:InstallDir $consoleUrl $Global:ServerPort $Global:ConsolePort $Global:Version "nacos" $Global:NacosPassword
         
-        # Handle detach or monitoring mode
-        if ($Global:DetachMode) {
+        # Handle daemon or monitoring mode
+        if ($Global:DaemonMode) {
             Write-Host ""
-            Write-Info "Detach mode: Script will exit now"
+            Write-Info "Daemon mode: Script will exit now"
             Write-Info "Nacos is running with PID: $($Global:StartedNacosPid)"
             Write-Info "To stop Nacos, run: Stop-Process -Id $($Global:StartedNacosPid) -Force"
             Write-Host ""

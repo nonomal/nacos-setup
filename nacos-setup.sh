@@ -15,13 +15,14 @@
 
 # Nacos Setup - Unified Installation Script
 # Supports both standalone and cluster modes
-# Version: 0.0.1
+# Version: AUTO-UPDATED-BY-PACKAGE-SCRIPT
 
 # ============================================================================
 # Script Initialization
 # ============================================================================
 
-NACOS_SETUP_VERSION="0.0.1"
+# NOTE: This version is automatically updated by package.sh during build
+NACOS_SETUP_VERSION="0.0.0-dev"
 
 set -e  # Exit on error (will be disabled after initial checks)
 
@@ -68,10 +69,44 @@ fi
 source "$LIB_DIR/common.sh"
 
 # ============================================================================
+# Load Version Management
+# ============================================================================
+
+if [ -f "$LIB_DIR/versions.sh" ]; then
+    source "$LIB_DIR/versions.sh"
+fi
+
+# Flag to track if user specified version via -v
+USER_SPECIFIED_VERSION=false
+
+# Initialize version on startup (only if user didn't specify -v)
+init_version() {
+    # If user specified version via -v, skip fetching
+    if [ "$USER_SPECIFIED_VERSION" = true ]; then
+        return 0
+    fi
+
+    # Try to fetch latest version from remote (only once)
+    if command -v get_version >/dev/null 2>&1; then
+        local fetched_version=$(get_version server 1)
+        if [ -n "$fetched_version" ] && [ "$fetched_version" != "$DEFAULT_VERSION" ]; then
+            DEFAULT_VERSION="$fetched_version"
+            VERSION="$fetched_version"
+            print_info "Using latest Nacos server version: $VERSION"
+        fi
+    fi
+}
+
+# ============================================================================
 # Default Configuration
 # ============================================================================
 
-DEFAULT_VERSION="3.1.1"
+# Use fallback version initially (don't fetch during script load)
+if [ -n "${FALLBACK_NACOS_SERVER_VERSION:-}" ]; then
+    DEFAULT_VERSION="$FALLBACK_NACOS_SERVER_VERSION"
+else
+    DEFAULT_VERSION="3.2.0-BETA"
+fi
 DEFAULT_INSTALL_DIR="$HOME/ai-infra/nacos"
 DEFAULT_MODE="standalone"
 DEFAULT_PORT="8848"
@@ -89,7 +124,7 @@ MODE="$DEFAULT_MODE"  # standalone or cluster
 VERSION="$DEFAULT_VERSION"
 AUTO_START=true
 ADVANCED_MODE=false
-DETACH_MODE=false
+DAEMON_MODE=false
 
 # Standalone parameters
 INSTALL_DIR=""
@@ -107,7 +142,9 @@ LEAVE_MODE=false
 NODE_INDEX=""
 
 # Datasource configuration mode
-DATASOURCE_CONF_MODE=false
+DB_CONF_MODE=""
+DB_CONF_FILE=""
+DB_CONF_ACTION=""
 
 # ============================================================================
 # Usage Information
@@ -133,8 +170,10 @@ COMMON OPTIONS:
     -p, --port PORT                Server port (default: 8848)
     --no-start                     Do not start after installation
     --adv                          Advanced mode (interactive prompts)
-    --detach                       Detach mode (exit after start)
-    --datasource-conf              Configure global datasource
+    --daemon                     Daemon mode (run in background, exit after start)
+    -db-conf [NAME]               Use external datasource (default: default)
+    db-conf edit [NAME]           Edit datasource configuration
+    db-conf show [NAME]           Show datasource configuration
     -h, --help                     Show this help message
 
 STANDALONE MODE OPTIONS:
@@ -199,32 +238,78 @@ EOF
 # ============================================================================
 
 parse_arguments() {
-    # First pass: detect flags that don't take values
-    local args=()
-    for arg in "$@"; do
-        case "$arg" in
-            --adv|--detach|--clean|--join|--no-start|--kill|--datasource-conf)
-                case "$arg" in
-                    --adv) ADVANCED_MODE=true ;;
-                    --detach) DETACH_MODE=true ;;
-                    --clean) CLEAN_MODE=true ;;
-                    --join) JOIN_MODE=true ;;
-                    --no-start) AUTO_START=false ;;
-                    --kill) ALLOW_KILL=true ;;
-                    --datasource-conf) DATASOURCE_CONF_MODE=true ;;
-                esac
-                ;;
-            *)
-                args+=("$arg")
-                ;;
-        esac
-    done
-    
-    # Second pass: parse options with values
-    set -- "${args[@]}"
-    
+    # Process arguments one by one
     while [[ $# -gt 0 ]]; do
         case $1 in
+            -db-conf)
+                shift
+                DB_CONF_MODE="use"
+                if [[ $# -gt 0 ]] && [[ "$1" != -* ]]; then
+                    DB_CONF_FILE="$1"
+                    shift
+                else
+                    DB_CONF_FILE="default"
+                fi
+                ;;
+            db-conf)
+                shift
+                if [[ $# -gt 0 ]]; then
+                    case $1 in
+                        edit)
+                            shift
+                            DB_CONF_MODE="edit"
+                            if [[ $# -gt 0 ]] && [[ "$1" != -* ]]; then
+                                DB_CONF_FILE="$1"
+                                shift
+                            else
+                                DB_CONF_FILE="default"
+                            fi
+                            ;;
+                        show)
+                            shift
+                            DB_CONF_MODE="show"
+                            if [[ $# -gt 0 ]] && [[ "$1" != -* ]]; then
+                                DB_CONF_FILE="$1"
+                                shift
+                            else
+                                DB_CONF_FILE="default"
+                            fi
+                            ;;
+                        *)
+                            print_error "Unknown db-conf subcommand: $1"
+                            print_info "Usage: db-conf edit [NAME] | db-conf show [NAME]"
+                            exit 1
+                            ;;
+                    esac
+                else
+                    print_error "db-conf requires a subcommand: edit or show"
+                    exit 1
+                fi
+                ;;
+            --adv)
+                ADVANCED_MODE=true
+                shift
+                ;;
+            --daemon)
+                DAEMON_MODE=true
+                shift
+                ;;
+            --clean)
+                CLEAN_MODE=true
+                shift
+                ;;
+            --join)
+                JOIN_MODE=true
+                shift
+                ;;
+            --no-start)
+                AUTO_START=false
+                shift
+                ;;
+            --kill)
+                ALLOW_KILL=true
+                shift
+                ;;
             -v|--version)
                 if [ -z "$2" ] || [[ "$2" == -* ]]; then
                     print_error "Option -v/--version requires a version number"
@@ -233,6 +318,7 @@ parse_arguments() {
                     exit 1
                 fi
                 VERSION="$2"
+                USER_SPECIFIED_VERSION=true
                 shift 2
                 ;;
             -p|--port)
@@ -344,18 +430,45 @@ validate_arguments() {
 # ============================================================================
 
 main() {
-    # Parse command line arguments
+    # Parse command line arguments first
     parse_arguments "$@"
-    
-    # Handle datasource configuration mode (special mode)
-    if [ "$DATASOURCE_CONF_MODE" = true ]; then
-        # This will be implemented in a separate module
-        print_info "Datasource configuration mode"
-        print_warn "This feature will be available after full migration"
-        print_info "For now, please use: bash install.sh --datasource-conf"
-        exit 0
+
+    # Handle db-conf mode (local modes that don't need version fetching)
+    if [ -n "$DB_CONF_MODE" ]; then
+        source "$LIB_DIR/config_manager.sh"
+        case "$DB_CONF_MODE" in
+            edit)
+                db_conf_edit "$DB_CONF_FILE"
+                exit $?
+                ;;
+            show)
+                db_conf_show "$DB_CONF_FILE"
+                exit $?
+                ;;
+            use)
+                # Enable external datasource mode for installation
+                USE_EXTERNAL_DATASOURCE=true
+                export USE_EXTERNAL_DATASOURCE
+                
+                # Set the default datasource config file for this run
+                if [ -n "$DB_CONF_FILE" ] && [ "$DB_CONF_FILE" != "default" ]; then
+                    DEFAULT_DATASOURCE_CONFIG="$HOME/ai-infra/nacos/${DB_CONF_FILE}.properties"
+                    export DEFAULT_DATASOURCE_CONFIG
+                fi
+                # Continue to normal installation flow (will init version below)
+                ;;
+        esac
     fi
-    
+
+    # Initialize version (fetch from remote only if user didn't specify -v)
+    init_version
+    echo ""
+
+    # Print external datasource mode info if enabled
+    if [ "${USE_EXTERNAL_DATASOURCE:-false}" = "true" ]; then
+        print_info "External datasource mode enabled: $DEFAULT_DATASOURCE_CONFIG"
+    fi
+
     # Validate arguments
     validate_arguments
     

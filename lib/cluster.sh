@@ -53,8 +53,8 @@ cleanup_on_exit() {
     
     trap - EXIT INT TERM
     
-    # Skip cleanup in detach mode
-    if [ "$DETACH_MODE" = true ]; then
+    # Skip cleanup in daemon mode
+    if [ "$DAEMON_MODE" = true ]; then
         exit $exit_code
     fi
     
@@ -190,15 +190,25 @@ create_cluster() {
     # Configure cluster security
     configure_cluster_security "$cluster_dir" "$ADVANCED_MODE"
     
-    # Check datasource
-    local datasource_file=$(load_global_datasource_config)
+    # Check datasource (only if explicitly specified via -db-conf)
     local use_derby=true
+    local datasource_file=""
     
-    if [ -n "$datasource_file" ]; then
-        print_info "Using external database"
-        use_derby=false
+    if [ "${USE_EXTERNAL_DATASOURCE:-false}" = "true" ]; then
+        datasource_file=$(load_default_datasource_config)
+        if [ -n "$datasource_file" ]; then
+            print_info "Using external database"
+            use_derby=false
+        else
+            print_error "External datasource specified but configuration not found at: $DEFAULT_DATASOURCE_CONFIG"
+            echo ""
+            print_info "To create the configuration, run:"
+            print_info "  nacos-setup db-conf edit $DEFAULT_DATASOURCE_CONFIG"
+            exit 1
+        fi
     else
         print_info "Using embedded Derby database"
+        print_info "Tip: Run 'nacos-setup -db-conf' to use external datasource"
     fi
     echo ""
     
@@ -263,9 +273,11 @@ create_cluster() {
         update_port_config "$config_file" "${node_main_ports[$i]}" "${node_console_ports[$i]}" "$VERSION"
         apply_security_config "$config_file" "$TOKEN_SECRET" "$IDENTITY_KEY" "$IDENTITY_VALUE"
         
-        local datasource_file=$(load_global_datasource_config)
-        if [ -n "$datasource_file" ]; then
-            apply_datasource_config "$config_file" "$datasource_file"
+        if [ "${USE_EXTERNAL_DATASOURCE:-false}" = "true" ]; then
+            local datasource_file=$(load_default_datasource_config)
+            if [ -n "$datasource_file" ]; then
+                apply_datasource_config "$config_file" "$datasource_file"
+            fi
         elif [ "$use_derby" = true ]; then
             configure_derby_for_cluster "$config_file"
         fi
@@ -338,9 +350,9 @@ create_cluster() {
         # Print cluster info
         print_cluster_info "$cluster_dir" "$VERSION" "$REPLICA_COUNT" "${node_main_ports[@]}" "${node_console_ports[@]}"
         
-        # Handle detach or monitoring
-        if [ "$DETACH_MODE" = true ]; then
-            print_info "Detach mode: Script will exit"
+        # Handle daemon or monitoring
+        if [ "$DAEMON_MODE" = true ]; then
+            print_info "Daemon mode: Script will exit"
             trap - EXIT INT TERM
             exit 0
         else
@@ -612,11 +624,7 @@ join_cluster() {
     echo "${local_ip}:${new_main_port}" >> "$cluster_dir/cluster.conf"
     
     # Configure node
-    local datasource_file=$(load_global_datasource_config)
     local use_derby=true
-    if [ -n "$datasource_file" ]; then
-        use_derby=false
-    fi
     
     # Copy cluster.conf
     cp "$cluster_dir/cluster.conf" "$new_node_dir/conf/cluster.conf"
@@ -632,9 +640,15 @@ join_cluster() {
     update_port_config "$config_file" "$new_main_port" "$new_console_port" "$VERSION"
     apply_security_config "$config_file" "$TOKEN_SECRET" "$IDENTITY_KEY" "$IDENTITY_VALUE"
     
-    if [ -n "$datasource_file" ]; then
-        apply_datasource_config "$config_file" "$datasource_file"
-    elif [ "$use_derby" = true ]; then
+    if [ "${USE_EXTERNAL_DATASOURCE:-false}" = "true" ]; then
+        local datasource_file=$(load_default_datasource_config)
+        if [ -n "$datasource_file" ]; then
+            apply_datasource_config "$config_file" "$datasource_file"
+            use_derby=false
+        fi
+    fi
+    
+    if [ "$use_derby" = true ]; then
         configure_derby_for_cluster "$config_file"
     fi
     
@@ -656,8 +670,8 @@ join_cluster() {
         if [ -n "$pid" ]; then
             print_info "Node joined successfully!"
             
-            if [ "$DETACH_MODE" = true ]; then
-                print_info "Detach mode: Script will exit"
+            if [ "$DAEMON_MODE" = true ]; then
+                print_info "Daemon mode: Script will exit"
                 trap - EXIT INT TERM
                 exit 0
             else

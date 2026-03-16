@@ -33,16 +33,37 @@ print_error() {
 # ============================================================================
 
 DOWNLOAD_BASE_URL="https://download.nacos.io"
-# nacos-setup version configuration
-NACOS_SETUP_VERSION="${NACOS_SETUP_VERSION:-0.0.1}"
-# nacos-cli configuration
-NACOS_CLI_VERSION="${NACOS_CLI_VERSION:-0.0.1}"
+
 INSTALL_BASE_DIR="/usr/local"
 CURRENT_LINK="nacos-setup"
 BIN_DIR="/usr/local/bin"
 SCRIPT_NAME="nacos-setup"
 TEMP_DIR="/tmp/nacos-setup-install-$$"
 CACHE_DIR="${HOME}/.nacos/cache"  # 缓存目录
+
+# ============================================================================
+# Load Version Management
+# ============================================================================
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [ -f "$SCRIPT_DIR/lib/versions.sh" ]; then
+    source "$SCRIPT_DIR/lib/versions.sh"
+elif [ -f "$SCRIPT_DIR/../lib/versions.sh" ]; then
+    source "$SCRIPT_DIR/../lib/versions.sh"
+fi
+
+# Runtime versions (will be populated from versions file or fallback)
+NACOS_SETUP_VERSION=""
+NACOS_CLI_VERSION=""
+NACOS_SERVER_VERSION=""
+
+# Initialize versions using the unified version manager
+init_versions() {
+    # Load all versions with 1 second timeout
+    get_all_versions 1
+    
+    print_info "Versions: CLI=$NACOS_CLI_VERSION, Setup=$NACOS_SETUP_VERSION, Server=$NACOS_SERVER_VERSION" >&2
+}
 
 # ============================================================================
 # Check Requirements
@@ -244,8 +265,8 @@ install_nacos_setup() {
     print_info "Installing nacos-setup..."
     echo ""
     
-    # Get version from environment variable or use default
-    local setup_version="${NACOS_SETUP_VERSION}"
+    # Get version from parameter, environment variable, or use default
+    local setup_version="${1:-${NACOS_SETUP_VERSION}}"
     
     print_info "Target version: $setup_version"
     
@@ -718,43 +739,87 @@ main() {
     echo "  Nacos Setup Installer"
     echo "========================================"
     echo ""
-    
+
+    # Initialize versions (fetch from remote or use fallback)
+    init_versions
+    echo ""
+
     # Parse arguments
     local install_cli=false
     local only_cli=false
-    case "${1:-}" in
-        version|--version|-v)
-            check_installed_version
-            exit $?
-            ;;
-        uninstall|--uninstall|-u)
-            uninstall_nacos_setup
-            exit 0
-            ;;
-        --cli)
-            install_cli=true
-            only_cli=true
-            ;;
-        --help|-h)
-            echo "Usage: curl -fsSL https://nacos.io/installer.sh | sudo bash"
-            echo ""
-            echo "Install nacos-setup and nacos-cli tools for managing Nacos instances."
-            echo ""
-            echo "Options:"
-            echo "  (none)              Install nacos-setup"
-            echo "  --cli               Install nacos-cli only"
-            echo "  version, -v         Show installed version"
-            echo "  uninstall, -u       Uninstall nacos-setup"
-            echo "  --help, -h          Show this help message"
-            echo ""
-            echo "After installation, use 'nacos-setup' command to manage Nacos:"
-            echo "  nacos-setup --help              Show nacos-setup help"
-            echo "  nacos-setup -v 3.1.1            Install Nacos standalone"
-            echo "  nacos-setup -c prod -n 3        Install Nacos cluster"
-            echo ""
-            exit 0
-            ;;
-    esac
+    local cli_version=""
+    local setup_version=""
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            version|--version)
+                check_installed_version
+                exit $?
+                ;;
+            uninstall|--uninstall|-u)
+                uninstall_nacos_setup
+                exit 0
+                ;;
+            --cli)
+                install_cli=true
+                only_cli=true
+                shift
+                ;;
+            -v|--version)
+                if [ -z "$2" ] || [[ "$2" == -* ]]; then
+                    print_error "Option $1 requires a version number"
+                    echo ""
+                    print_info "Usage: ./nacos-installer.sh -v <version>"
+                    print_info "        ./nacos-installer.sh --cli -v <version>"
+                    exit 1
+                fi
+                # 根据模式决定版本类型
+                if [[ "$install_cli" == true ]]; then
+                    cli_version="$2"
+                else
+                    setup_version="$2"
+                fi
+                shift 2
+                ;;
+            --help|-h)
+                echo "Usage: curl -fsSL https://nacos.io/installer.sh | sudo bash"
+                echo ""
+                echo "Install nacos-setup and nacos-cli tools for managing Nacos instances."
+                echo ""
+                echo "Options:"
+                echo "  (none)              Install nacos-setup"
+                echo "  -v, --version       Specify version (nacos-setup or nacos-cli with --cli)"
+                echo "  --cli               Install nacos-cli only"
+                echo "  version             Show installed version"
+                echo "  uninstall, -u       Uninstall nacos-setup"
+                echo "  --help, -h          Show this help message"
+                echo ""
+                echo "Examples:"
+                echo "  ./nacos-installer.sh                    Install latest nacos-setup"
+                echo "  ./nacos-installer.sh -v 0.0.3           Install nacos-setup v0.0.3"
+                echo "  ./nacos-installer.sh --cli              Install latest nacos-cli"
+                echo "  ./nacos-installer.sh --cli -v 0.0.3     Install nacos-cli v0.0.3"
+                echo ""
+                echo "After installation, use 'nacos-setup' command to manage Nacos:"
+                echo "  nacos-setup --help              Show nacos-setup help"
+                echo "  nacos-setup -v 3.1.1            Install Nacos standalone"
+                echo "  nacos-setup -c prod -n 3        Install Nacos cluster"
+                echo ""
+                exit 0
+                ;;
+            *)
+                print_error "Unknown option: $1"
+                echo ""
+                print_info "Use --help for usage information"
+                exit 1
+                ;;
+        esac
+    done
+
+    # Apply CLI version if specified
+    if [ -n "$cli_version" ]; then
+        NACOS_CLI_VERSION="$cli_version"
+    fi
     
     # Check requirements
     if ! check_requirements "${only_cli:+onlycli}"; then
@@ -770,7 +835,7 @@ main() {
     fi
 
     # Install
-    install_nacos_setup
+    install_nacos_setup "$setup_version"
 
     # Verify
     if verify_installation; then
@@ -784,15 +849,8 @@ main() {
 
         # After installation, offer to install Nacos (default version)
         echo ""
-        # Try to detect default Nacos version from installed script
-        detected_default_version="3.1.1"
-        installed_script="$INSTALL_BASE_DIR/$CURRENT_LINK/bin/$SCRIPT_NAME"
-        if [ -f "$installed_script" ]; then
-            v=$(sed -n 's/^DEFAULT_VERSION="\(.*\)"/\1/p' "$installed_script" || true)
-            if [ -n "$v" ]; then
-                detected_default_version="$v"
-            fi
-        fi
+        # Use server version from versions file or fallback
+        detected_default_version="${NACOS_SERVER_VERSION:-$FALLBACK_NACOS_SERVER_VERSION}"
 
         read -p "Do you want to install Nacos $detected_default_version now? (Y/n): " -r REPLY
         echo ""

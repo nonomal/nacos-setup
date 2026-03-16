@@ -51,8 +51,8 @@ cleanup_on_exit() {
     fi
     CLEANUP_DONE=true
     
-    # Skip cleanup in detach mode
-    if [ "$DETACH_MODE" = true ]; then
+    # Skip cleanup in daemon mode
+    if [ "$DAEMON_MODE" = true ]; then
         exit $exit_code
     fi
     
@@ -68,7 +68,7 @@ cleanup_on_exit() {
         fi
         
         echo ""
-        print_info "Tip: Use --detach flag to run Nacos in background without auto-cleanup"
+        print_info "Tip: Use --daemon flag to run Nacos in background without auto-cleanup"
     fi
     
     exit $exit_code
@@ -148,15 +148,23 @@ run_standalone_mode() {
     # Configure security
     configure_standalone_security "$config_file" "$ADVANCED_MODE"
     
-    # Load and apply datasource configuration
-    local datasource_file=$(load_global_datasource_config)
-    if [ -n "$datasource_file" ]; then
-        print_info "Applying global datasource configuration..."
-        apply_datasource_config "$config_file" "$datasource_file"
-        print_info "External database configured"
+    # Load and apply datasource configuration only if explicitly specified via -db-conf
+    if [ "${USE_EXTERNAL_DATASOURCE:-false}" = "true" ]; then
+        local datasource_file=$(load_default_datasource_config)
+        if [ -n "$datasource_file" ]; then
+            print_info "Applying external datasource configuration..."
+            apply_datasource_config "$config_file" "$datasource_file"
+            print_info "External database configured"
+        else
+            print_error "External datasource specified but configuration not found at: $DEFAULT_DATASOURCE_CONFIG"
+            echo ""
+            print_info "To create the configuration, run:"
+            print_info "  nacos-setup db-conf edit $DEFAULT_DATASOURCE_CONFIG"
+            exit 1
+        fi
     else
         print_info "Using embedded Derby database"
-        print_info "Tip: Run 'bash nacos-setup.sh --datasource-conf' to configure external database"
+        print_info "Tip: Run 'nacos-setup -db-conf' to use external datasource"
     fi
     
     rm -f "$config_file.bak"
@@ -207,15 +215,15 @@ run_standalone_mode() {
         
         print_completion_info "$INSTALL_DIR" "$console_url" "$SERVER_PORT" "$CONSOLE_PORT" "$VERSION" "nacos" "$NACOS_PASSWORD"
         
-        # Handle detach or monitoring mode
-        if [ "$DETACH_MODE" = true ]; then
+        # Handle daemon or monitoring mode
+        if [ "$DAEMON_MODE" = true ]; then
             echo ""
-            print_info "Detach mode: Script will exit now"
+            print_info "Daemon mode: Script will exit now"
             print_info "Nacos is running with PID: $STARTED_NACOS_PID"
             print_info "To stop Nacos, run: kill $STARTED_NACOS_PID"
             echo ""
             
-            # Disable trap for detach mode
+            # Disable trap for daemon mode
             trap - EXIT INT TERM
             exit 0
         else

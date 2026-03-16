@@ -1,16 +1,24 @@
 # Configuration management for Windows nacos-setup
 . $PSScriptRoot\common.ps1
 
-$Global:GlobalDatasourceConfig = Join-Path $env:USERPROFILE "ai-infra\nacos\default.properties"
+# Cross-platform user profile detection
+$userProfile = if ($env:USERPROFILE) { $env:USERPROFILE } elseif ($env:HOME) { $env:HOME } else { "." }
+$Global:DefaultDatasourceConfig = Join-Path $userProfile "ai-infra\nacos\default.properties"
 
-function Load-GlobalDatasourceConfig {
-    if (Test-Path $Global:GlobalDatasourceConfig -PathType Leaf) {
-        $content = Get-Content -Path $Global:GlobalDatasourceConfig | Where-Object { $_ -notmatch '^\s*#' -and $_ -notmatch '^\s*$' }
+function Load-DefaultDatasourceConfig {
+    $configPath = if ($env:DEFAULT_DATASOURCE_CONFIG) { $env:DEFAULT_DATASOURCE_CONFIG } else { $Global:DefaultDatasourceConfig }
+    if (Test-Path $configPath -PathType Leaf) {
+        $content = Get-Content -Path $configPath | Where-Object { $_ -notmatch '^\s*#' -and $_ -notmatch '^\s*$' }
         if ($content -match '^(spring\.(datasource|sql\.init)\.platform|db\.num)') {
-            return $Global:GlobalDatasourceConfig
+            return $configPath
         }
     }
     return $null
+}
+
+# Alias for compatibility
+function Load-GlobalDatasourceConfig {
+    return Load-DefaultDatasourceConfig
 }
 
 function Apply-DatasourceConfig($configFile, $datasourceFile) {
@@ -144,46 +152,105 @@ function Update-PortConfig($configFile, $serverPort, $consolePort, $nacosVersion
     }
 }
 
-function Configure-DatasourceConf {
-    Ensure-Directory (Split-Path $Global:GlobalDatasourceConfig -Parent)
+# Resolve config file path from config name
+function Resolve-ConfigPath($configName) {
+    if ($configName -eq "default" -or -not $configName) {
+        return $Global:DefaultDatasourceConfig
+    }
+    $userProfile = if ($env:USERPROFILE) { $env:USERPROFILE } elseif ($env:HOME) { $env:HOME } else { "." }
+    return Join-Path $userProfile "ai-infra\nacos\${configName}.properties"
+}
+
+function Edit-DatasourceConfig($configName = $null) {
+    $targetFile = Resolve-ConfigPath $configName
+    Ensure-Directory (Split-Path $targetFile -Parent)
+
+    Write-Host ""
+    Write-Info "========================================"
+    Write-Info "External Datasource Configuration"
+    Write-Info "========================================"
+    Write-Host ""
+    Write-Host "This will create a datasource configuration for Nacos."
+    Write-Host "Supported databases: MySQL, PostgreSQL"
+    Write-Host ""
+
+    if (Test-Path $targetFile) {
+        Write-Warn "Existing configuration found at: $targetFile"
+        $confirm = Read-Host "Overwrite? (y/N)"
+        if ($confirm -ne "y" -and $confirm -ne "Y") {
+            Write-Info "Operation cancelled"
+            return
+        }
+    }
 
     $dbType = Read-Host "Database type (mysql/postgresql)"
     if (-not $dbType) { throw "Database type is required" }
     $dbType = $dbType.ToLower()
     if ($dbType -ne "mysql" -and $dbType -ne "postgresql") { throw "Unsupported database type" }
 
-    $host = Read-Host "Database host"
-    if (-not $host) { throw "Database host is required" }
+    $dbHost = Read-Host "Database host (default: localhost)"
+    if (-not $dbHost) { $dbHost = "localhost" }
 
-    $port = Read-Host "Database port"
-    if (-not $port) {
-        $port = if ($dbType -eq "mysql") { "3306" } else { "5432" }
-    }
+    $defaultPort = if ($dbType -eq "mysql") { "3306" } else { "5432" }
+    $dbPort = Read-Host "Database port (default: $defaultPort)"
+    if (-not $dbPort) { $dbPort = $defaultPort }
 
-    $dbName = Read-Host "Database name"
-    if (-not $dbName) { throw "Database name is required" }
+    $dbName = Read-Host "Database name (default: nacos)"
+    if (-not $dbName) { $dbName = "nacos" }
 
-    $user = Read-Host "Database username"
-    if (-not $user) { throw "Database username is required" }
+    $dbUser = Read-Host "Database username"
+    if (-not $dbUser) { throw "Database username is required" }
 
-    $pass = Read-Host "Database password"
-    if (-not $pass) { $pass = "" }
+    $pass = Read-Host "Database password" -AsSecureString
+    $passPlain = [Runtime.InteropServices.Marshal]::PtrToStringAuto([Runtime.InteropServices.Marshal]::SecureStringToBSTR($pass))
 
     if ($dbType -eq "mysql") {
-        $jdbc = "jdbc:mysql://$host`:$port/$dbName?characterEncoding=utf8&connectTimeout=1000&socketTimeout=3000&autoReconnect=true&useUnicode=true&useSSL=false&serverTimezone=UTC"
+        $jdbc = "jdbc:mysql://$($dbHost):$($dbPort)/$($dbName)?characterEncoding=utf8&connectTimeout=1000&socketTimeout=3000&autoReconnect=true&useUnicode=true&useSSL=false&serverTimezone=UTC"
     } else {
-        $jdbc = "jdbc:postgresql://$host`:$port/$dbName?stringtype=unspecified"
+        $jdbc = "jdbc:postgresql://$($dbHost):$($dbPort)/$($dbName)?stringtype=unspecified"
     }
 
-    @"
-# Nacos datasource config (auto-generated)
-spring.sql.init.platform=$dbType
-spring.datasource.platform=$dbType
-db.num=1
-db.url.0=$jdbc
-db.user.0=$user
-db.password.0=$pass
-"@ | Set-Content -Path $Global:GlobalDatasourceConfig -Encoding UTF8
+    $configLines = @(
+        "# Nacos datasource config (auto-generated)",
+        "spring.sql.init.platform=$dbType",
+        "spring.datasource.platform=$dbType",
+        "db.num=1",
+        "db.url.0=$jdbc",
+        "db.user.0=$dbUser",
+        "db.password.0=$passPlain"
+    )
+    $configLines | Set-Content -Path $targetFile -Encoding UTF8
 
-    Write-Info "Datasource configuration saved to: $Global:GlobalDatasourceConfig"
+    Write-Host ""
+    Write-Info "Datasource configuration saved to: $targetFile"
+    Write-Host ""
+    Write-Info "Configuration Summary:"
+    Write-Host "  Platform:  $dbType"
+    Write-Host "  Host:      $dbHost"
+    Write-Host "  Port:      $dbPort"
+    Write-Host "  Database:  $dbName"
+    Write-Host "  User:      $dbUser"
+}
+
+function Show-DatasourceConfig($configName = $null) {
+    $targetFile = Resolve-ConfigPath $configName
+
+    Write-Host ""
+    Write-Info "========================================"
+    Write-Info "Datasource Configuration"
+    Write-Info "========================================"
+    Write-Host ""
+
+    if (-not (Test-Path $targetFile)) {
+        Write-Warn "No datasource configuration found at: $targetFile"
+        Write-Host ""
+        Write-Info "To create a configuration, run:"
+        Write-Info "  nacos-setup db-conf edit [NAME]"
+        return
+    }
+
+    Write-Info "File: $targetFile"
+    Write-Host ""
+    Get-Content -Path $targetFile | ForEach-Object { Write-Host $_ }
+    Write-Host ""
 }
