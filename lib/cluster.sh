@@ -329,11 +329,21 @@ create_cluster() {
     echo "[nacos-setup/skill-scanner] cluster: post-config reached (VERSION=${VERSION})" >&2
     if declare -F run_post_nacos_config_skill_scanner_hook >/dev/null 2>&1; then
         run_post_nacos_config_skill_scanner_hook
+        # Configure skill-scanner plugin properties only if skill-scanner is available
+        if command -v skill-scanner >/dev/null 2>&1 && declare -F configure_skill_scanner_properties >/dev/null 2>&1; then
+            for ((i=0; i<REPLICA_COUNT; i++)); do
+                local node_name="${i}-v${VERSION}"
+                local node_config_file="$cluster_dir/$node_name/conf/application.properties"
+                if [ -f "$node_config_file" ]; then
+                    configure_skill_scanner_properties "$node_config_file"
+                fi
+            done
+        fi
     else
         echo "[nacos-setup/skill-scanner] ERROR: run_post_nacos_config_skill_scanner_hook missing; add lib/skill_scanner_install.sh to $SCRIPT_DIR" >&2
     fi
     echo ""
-    
+
     # Start all nodes
     if [ "$AUTO_START" = true ]; then
         print_info "Starting cluster nodes (sequential start)..."
@@ -368,7 +378,18 @@ create_cluster() {
         
         # Initialize password on first node
         if [ -n "$NACOS_PASSWORD" ] && [ "$NACOS_PASSWORD" != "nacos" ]; then
-            initialize_admin_password "${node_main_ports[0]}" "${node_console_ports[0]}" "$VERSION" "$NACOS_PASSWORD"
+            print_info "Initializing admin password..."
+            if initialize_admin_password "${node_main_ports[0]}" "${node_console_ports[0]}" "$VERSION" "$NACOS_PASSWORD"; then
+                print_info "Admin password initialized successfully"
+                echo ""
+                print_info "Auto-Generated Admin Password:"
+                echo "  $NACOS_PASSWORD"
+                echo ""
+            else
+                print_warn "Password initialization failed (may already be set previously)"
+                # Clear password so it won't be shown in completion info
+                NACOS_PASSWORD=""
+            fi
         fi
         
         # Print cluster info
@@ -481,9 +502,9 @@ print_cluster_info() {
     
     for i in "${!main_ports[@]}"; do
         if [ "$nacos_major" -ge 3 ]; then
-            echo "  Node $i: http://${local_ip}:${console_ports[$i]}/index.html"
+            echo "  Node $i: http://${local_ip}:${console_ports[$i]}"
         else
-            echo "  Node $i: http://${local_ip}:${main_ports[$i]}/nacos/index.html"
+            echo "  Node $i: http://${local_ip}:${main_ports[$i]}/nacos"
         fi
     done
     
@@ -692,11 +713,15 @@ join_cluster() {
     echo "[nacos-setup/skill-scanner] cluster join: post-config reached (VERSION=${VERSION})" >&2
     if declare -F run_post_nacos_config_skill_scanner_hook >/dev/null 2>&1; then
         run_post_nacos_config_skill_scanner_hook
+        # Configure skill-scanner plugin properties only if skill-scanner is available
+        if command -v skill-scanner >/dev/null 2>&1 && declare -F configure_skill_scanner_properties >/dev/null 2>&1; then
+            configure_skill_scanner_properties "$config_file"
+        fi
     else
         echo "[nacos-setup/skill-scanner] ERROR: run_post_nacos_config_skill_scanner_hook missing; add lib/skill_scanner_install.sh to $SCRIPT_DIR" >&2
     fi
     echo ""
-    
+
     # Update cluster.conf in existing nodes
     print_info "Updating cluster.conf in existing nodes..."
     for existing_node in "${existing_nodes[@]}"; do
