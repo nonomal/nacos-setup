@@ -904,25 +904,15 @@ main() {
         exit $?
     fi
 
-    # Check if nacos-setup is already installed
-    local setup_already_installed=false
-    if [ -L "$INSTALL_BASE_DIR/$CURRENT_LINK" ] && [ -f "$BIN_DIR/$SCRIPT_NAME" ]; then
-        setup_already_installed=true
-        print_info "nacos-setup is already installed, skipping reinstallation"
-        echo ""
-    fi
+    # Install
+    install_nacos_setup "$setup_version"
 
-    # Install nacos-setup only if not already installed
-    if [[ "$setup_already_installed" == false ]]; then
-        install_nacos_setup "$setup_version"
-        
-        # Verify installation
-        if ! verify_installation; then
-            print_error "Installation verification failed"
-            exit 1
-        fi
-        
+    # Verify
+    if verify_installation; then
         print_usage_info
+    else
+        print_error "Installation verification failed"
+        exit 1
     fi
 
     # Install nacos-cli if --cli flag is provided
