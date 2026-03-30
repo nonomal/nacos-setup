@@ -21,16 +21,10 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/common.sh"
 source "$SCRIPT_DIR/java_manager.sh"
 
-
-# Detect Windows shell environment (Git Bash/MSYS/Cygwin)
-_pm_is_windows_env() {
-    case "${OSTYPE:-}" in
-        cygwin|msys|win32) return 0 ;;
-    esac
-    case "$(uname -s 2>/dev/null)" in
-        CYGWIN*|MINGW*|MSYS*|Windows_NT) return 0 ;;
-        *) return 1 ;;
-    esac
+_pm_debug() {
+    if [ "${VERBOSE:-false}" = true ]; then
+        echo "[DEBUG] $*" >&2
+    fi
 }
 
 # ============================================================================
@@ -50,26 +44,18 @@ wait_for_nacos_ready() {
     
     # Determine health check URL based on Nacos version
     local nacos_major=$(echo "$nacos_version" | cut -d. -f1)
-    local health_url_alt=""
-    local health_url_alt2=""
     if [ "$nacos_major" -ge 3 ]; then
         health_url="http://localhost:${console_port}/v3/console/health/readiness"
-        health_url_alt="http://localhost:${main_port}/v3/console/health/readiness"
-        health_url_alt2="http://localhost:${console_port}/nacos/v3/console/health/readiness"
     else
         health_url="http://localhost:${main_port}/nacos/v2/console/health/readiness"
     fi
-
-    # Windows startup under Git Bash is often slower than Linux/macOS.
-    if _pm_is_windows_env && [ "$max_wait" -lt 120 ]; then
-        max_wait=120
-    fi
     
+    _pm_debug "wait_for_nacos_ready url=${health_url} max_wait=${max_wait}s"
+    _pm_debug "HTTP_PROXY=${HTTP_PROXY:-<empty>} HTTPS_PROXY=${HTTPS_PROXY:-<empty>} NO_PROXY=${NO_PROXY:-<empty>}"
+
     while [ $wait_count -lt $max_wait ]; do
-        # Check health endpoint (with fallbacks for Nacos 3.x path differences)
-        if curl -sf "$health_url" >/dev/null 2>&1 || \
-           { [ -n "$health_url_alt" ] && curl -sf "$health_url_alt" >/dev/null 2>&1; } || \
-           { [ -n "$health_url_alt2" ] && curl -sf "$health_url_alt2" >/dev/null 2>&1; }; then
+        # Check health endpoint
+        if curl --noproxy "*" --connect-timeout 2 --max-time 3 -sf "$health_url" >/dev/null 2>&1; then
             if [ "$VERBOSE" = true ]; then echo -ne "\r\033[K" >&2; fi
             return 0
         fi
@@ -83,7 +69,17 @@ wait_for_nacos_ready() {
     done
     
     if [ "$VERBOSE" = true ]; then echo "" >&2; fi
+    _pm_debug "Health check timed out. Collecting diagnostics..."
+    if command -v netstat >/dev/null 2>&1; then
+        _pm_debug "Listening ports snapshot (8848/8080/9848):"
+        netstat -an 2>/dev/null | grep -E '[:.]8848[[:space:]]|[:.]8080[[:space:]]|[:.]9848[[:space:]]' >&2 || true
+    fi
+    if command -v ps >/dev/null 2>&1; then
+        _pm_debug "Java process snapshot:"
+        ps aux 2>/dev/null | grep -i java | grep -v grep >&2 || true
+    fi
     print_warn "Nacos health check timeout after ${max_wait}s" >&2
+    print_warn "If you use a proxy, set NO_PROXY=localhost,127.0.0.1 and retry." >&2
     return 1
 }
 
@@ -140,34 +136,6 @@ initialize_admin_password() {
 # Process Startup
 # ============================================================================
 
-# Find Nacos Java PID on Windows (Git Bash/MSYS/Cygwin) by matching install_dir
-# against process command line. Echoes PID or empty.
-_find_windows_nacos_pid() {
-    local install_dir="$1"
-    local install_win="$install_dir"
-    local pid=""
-
-    if command -v cygpath >/dev/null 2>&1; then
-        install_win=$(cygpath -w "$install_dir" 2>/dev/null || echo "$install_dir")
-    fi
-
-    if command -v powershell >/dev/null 2>&1; then
-        pid=$(NACOS_INSTALL_DIR="$install_win" powershell -NoProfile -Command '
-            $d = $env:NACOS_INSTALL_DIR
-            $p = Get-CimInstance Win32_Process -Filter "Name=''java.exe''" |
-                Where-Object { $_.CommandLine -and $_.CommandLine -like ("*" + $d + "*") } |
-                Select-Object -First 1 -ExpandProperty ProcessId
-            if ($p) { Write-Output $p }
-        ' 2>/dev/null | tr -d '\r' | head -1)
-    fi
-
-    if [ -z "$pid" ]; then
-        pid=$(ps -efW 2>/dev/null | grep "[j]ava" | grep "$install_dir" | awk '{print $2}' | head -1)
-    fi
-
-    printf '%s\n' "$pid"
-}
-
 # Start Nacos process
 # Parameters: install_dir, mode (standalone/cluster), use_derby (true/false)
 # Returns: PID on success, empty on failure
@@ -177,7 +145,7 @@ start_nacos_process() {
     local use_derby=${3:-true}
     
     if [ ! -d "$install_dir" ]; then
-        print_error "Installation directory not found: $install_dir" >&2
+        print_error "Installation directory not found: $install_dir"
         return 1
     fi
     
@@ -195,44 +163,36 @@ start_nacos_process() {
         export PATH="${JAVA_HOME}/bin:${PATH}"
     fi
 
-    # Start Nacos (Windows: prefer startup.cmd; Unix: startup.sh).
-    if _pm_is_windows_env && [ -f "$install_dir/bin/startup.cmd" ]; then
-        local win_startup="$install_dir/bin/startup.cmd"
-        if command -v cygpath >/dev/null 2>&1; then
-            win_startup=$(cygpath -w "$install_dir/bin/startup.cmd" 2>/dev/null || echo "$install_dir/bin/startup.cmd")
-        fi
-        if [ "$use_derby" = true ] && [ "$mode" = "cluster" ]; then
-            cmd.exe /c "echo Y | \"${win_startup}\" -m \"${mode}\" -p embedded" >/dev/null 2>&1
-        else
-            cmd.exe /c "echo Y | \"${win_startup}\" -m \"${mode}\"" >/dev/null 2>&1
-        fi
-    elif [ "$use_derby" = true ] && [ "$mode" = "cluster" ]; then
-        bash "$install_dir/bin/startup.sh" -m "$mode" -p embedded >/dev/null 2>&1
+    # Start Nacos
+    local startup_log="$install_dir/logs/nacos-setup-startup.log"
+    mkdir -p "$install_dir/logs" 2>/dev/null || true
+    _pm_debug "Starting Nacos mode=${mode}, use_derby=${use_derby}, install_dir=${install_dir}"
+    _pm_debug "Startup log: ${startup_log}"
+
+    if [ "$use_derby" = true ] && [ "$mode" = "cluster" ]; then
+        bash "$install_dir/bin/startup.sh" -m "$mode" -p embedded >"$startup_log" 2>&1
     else
-        bash "$install_dir/bin/startup.sh" -m "$mode" >/dev/null 2>&1
+        bash "$install_dir/bin/startup.sh" -m "$mode" >"$startup_log" 2>&1
     fi
     
     # Clear JAVA_OPT after starting
     unset JAVA_OPT
     
-    # Try to find the PID - Windows/Git Bash compatible
+    # Try to find the PID (may take a moment for process to bind to port)
     local pid=""
     local retry_count=0
-    local max_retries=15
-    local is_windows=0
-    _pm_is_windows_env && is_windows=1
+    local max_retries=10
     
     while [ $retry_count -lt $max_retries ]; do
         sleep 1
-        
-        if [ $is_windows -eq 1 ]; then
-            pid=$(_find_windows_nacos_pid "$install_dir")
-        else
-            # Linux / macOS
-            pid=$(ps aux | grep "[j]ava" | grep "$install_dir" | awk '{print $2}' | head -1)
+        pid=$(ps aux | grep "java" | grep "$install_dir" | grep -v grep | awk '{print $2}' | head -1)
+        if [ -z "$pid" ]; then
+            # Windows Git Bash often reports Windows path in java cmdline; fallback match by "nacos"
+            pid=$(ps aux | grep -i "java" | grep -i "nacos" | grep -v grep | awk '{print $2}' | head -1)
         fi
         
-        if [ -n "$pid" ] && ps -p "$pid" >/dev/null 2>&1; then
+        if [ -n "$pid" ] && ps -p $pid >/dev/null 2>&1; then
+            _pm_debug "Detected Nacos PID: $pid"
             echo "$pid"
             return 0
         fi
@@ -240,8 +200,11 @@ start_nacos_process() {
         retry_count=$((retry_count + 1))
     done
     
-    # Could not determine PID - but Nacos may still be starting normally
-    print_warn "Could not determine Nacos PID (may still be starting)" >&2
+    # Could not determine PID
+    _pm_debug "Could not determine PID after ${max_retries}s. Recent startup log:"
+    if [ -f "$startup_log" ]; then
+        tail -n 80 "$startup_log" >&2 || true
+    fi
     echo ""
     return 1
 }
