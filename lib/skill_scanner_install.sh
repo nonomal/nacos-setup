@@ -254,8 +254,9 @@ _ensure_python_310_plus_with_uv() {
     fi
 
     # Fallback: uv-managed Python when system Python is missing or < 3.10.
-    print_detail "No Python 3.10+ on PATH; installing Python 3.10 with uv..."
-    if _skill_scanner_runas_target_user uv python install 3.10; then
+    # print_detail and uv must go to stderr: caller uses py_exe=$(this_func) and only stdout must be the interpreter path.
+    print_detail "No Python 3.10+ on PATH; installing Python 3.10 with uv..." >&2
+    if _skill_scanner_runas_target_user uv python install 3.10 >&2; then
         py_exe=$(_skill_scanner_runas_target_user uv python find 3.10 2>/dev/null || true)
     fi
 
