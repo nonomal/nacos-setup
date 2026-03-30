@@ -389,8 +389,11 @@ _ensure_python_310_plus_with_uv() {
     fi
     print_info "Installing Python 3.10 with uv (this may take a moment)..." >&2
     local py_install_ok=0
+    # Do not use `uv -q python install`: on some uv versions -q can return before the
+    # interpreter is fully materialized, and a later `uv -q venv --python <path>` then fails
+    # with "No interpreter found" while verbose (non -q) works. Keep UI quiet via redirects + UV_NO_PROGRESS only.
     if _skill_scanner_uv_use_quiet_output; then
-        if _skill_scanner_runas_target_user env UV_NO_PROGRESS=1 uv -q python install 3.10 >/dev/null 2>&1; then
+        if _skill_scanner_runas_target_user env UV_NO_PROGRESS=1 uv python install 3.10 >/dev/null 2>&1; then
             py_install_ok=1
         fi
     else
@@ -401,6 +404,7 @@ _ensure_python_310_plus_with_uv() {
     py_exe=""
     if [ "$py_install_ok" -eq 1 ]; then
         py_exe=$(_skill_scanner_runas_target_user uv python find 3.10 2>/dev/null || true)
+        py_exe=$(printf '%s' "$py_exe" | tr -d '\r' | awk 'NF {print; exit}')
     fi
 
     if [ -n "$py_exe" ] && _skill_scanner_runas_target_user "$py_exe" -c "import sys; raise SystemExit(0 if sys.version_info >= (3, 10) else 1)" 2>/dev/null; then
@@ -444,26 +448,32 @@ _create_skill_scanner_venv_with_uv() {
 
     logf="${TMPDIR:-/tmp}/nacos-setup-uv-venv.$$.log"
 
+    # Avoid `uv -q venv` here for the same reason as python install (interpreter resolution).
+    local py_for_venv=$py_exe
+    if _skill_scanner_runas_target_user uv python find 3.10 >/dev/null 2>&1; then
+        py_for_venv="3.10"
+    fi
+
     if _skill_scanner_uv_use_quiet_output; then
         : >"$logf" 2>/dev/null || logf=/dev/null
-        _skill_scanner_runas_target_user env UV_NO_PROGRESS=1 uv -q venv --no-project --python "$py_exe" "$venv_dir" >"$logf" 2>&1
+        _skill_scanner_runas_target_user env UV_NO_PROGRESS=1 uv venv --no-project --python "$py_for_venv" "$venv_dir" >"$logf" 2>&1
         rc=$?
         # Incomplete or conflicting directory from a previous run — one retry with --clear.
         if [ "$rc" -ne 0 ] && [ -d "$venv_dir" ]; then
-            _skill_scanner_runas_target_user env UV_NO_PROGRESS=1 uv -q venv --no-project --clear --python "$py_exe" "$venv_dir" >"$logf" 2>&1
+            _skill_scanner_runas_target_user env UV_NO_PROGRESS=1 uv venv --no-project --clear --python "$py_for_venv" "$venv_dir" >"$logf" 2>&1
             rc=$?
         fi
         # Hardlinks sometimes fail on overlay/virt FS — retry with copy link mode.
         if [ "$rc" -ne 0 ]; then
-            _skill_scanner_runas_target_user env UV_NO_PROGRESS=1 UV_LINK_MODE=copy uv -q venv --no-project --python "$py_exe" "$venv_dir" >"$logf" 2>&1
+            _skill_scanner_runas_target_user env UV_NO_PROGRESS=1 UV_LINK_MODE=copy uv venv --no-project --python "$py_for_venv" "$venv_dir" >"$logf" 2>&1
             rc=$?
         fi
         if [ "$rc" -ne 0 ] && [ -d "$venv_dir" ]; then
-            _skill_scanner_runas_target_user env UV_NO_PROGRESS=1 UV_LINK_MODE=copy uv -q venv --no-project --clear --python "$py_exe" "$venv_dir" >"$logf" 2>&1
+            _skill_scanner_runas_target_user env UV_NO_PROGRESS=1 UV_LINK_MODE=copy uv venv --no-project --clear --python "$py_for_venv" "$venv_dir" >"$logf" 2>&1
             rc=$?
         fi
         if [ "$rc" -ne 0 ]; then
-            _skill_scanner_warn_uv_venv_failed "$rc" "$py_exe" "$venv_dir" "$logf"
+            _skill_scanner_warn_uv_venv_failed "$rc" "$py_for_venv" "$venv_dir" "$logf"
             [ "$logf" != /dev/null ] && rm -f "$logf"
             return "$rc"
         fi
@@ -471,15 +481,15 @@ _create_skill_scanner_venv_with_uv() {
         return 0
     fi
 
-    if ! _skill_scanner_runas_target_user uv venv --no-project --python "$py_exe" "$venv_dir"; then
+    if ! _skill_scanner_runas_target_user uv venv --no-project --python "$py_for_venv" "$venv_dir"; then
         rc=$?
-        if [ -d "$venv_dir" ] && _skill_scanner_runas_target_user uv venv --no-project --clear --python "$py_exe" "$venv_dir"; then
+        if [ -d "$venv_dir" ] && _skill_scanner_runas_target_user uv venv --no-project --clear --python "$py_for_venv" "$venv_dir"; then
             return 0
         fi
-        if _skill_scanner_runas_target_user env UV_LINK_MODE=copy uv venv --no-project --python "$py_exe" "$venv_dir"; then
+        if _skill_scanner_runas_target_user env UV_LINK_MODE=copy uv venv --no-project --python "$py_for_venv" "$venv_dir"; then
             return 0
         fi
-        if [ -d "$venv_dir" ] && _skill_scanner_runas_target_user env UV_LINK_MODE=copy uv venv --no-project --clear --python "$py_exe" "$venv_dir"; then
+        if [ -d "$venv_dir" ] && _skill_scanner_runas_target_user env UV_LINK_MODE=copy uv venv --no-project --clear --python "$py_for_venv" "$venv_dir"; then
             return 0
         fi
         return "$rc"
