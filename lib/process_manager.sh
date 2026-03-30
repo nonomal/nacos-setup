@@ -405,6 +405,30 @@ start_nacos_process() {
         export PATH="${JAVA_HOME}/bin:${PATH}"
     fi
 
+    # On Windows (Git Bash/MSYS), export NACOS_HOME as a Windows-format path.
+    # Nacos startup.sh uses NACOS_HOME (or BASE_DIR) to construct JVM arguments
+    # such as -Xlog:gc*:file=${BASE_DIR}/logs/nacos_gc.log. MSYS2 does NOT
+    # auto-convert paths embedded inside compound arguments like -Xlog, so
+    # the MSYS path (/c/Users/...) would be passed verbatim to the Windows
+    # JVM which cannot resolve it → "Could not create the Java Virtual Machine".
+    local _saved_nacos_home="${NACOS_HOME:-}"
+    if _pm_is_windows_env; then
+        local win_home
+        win_home=$(cd "$install_dir" 2>/dev/null && pwd -W 2>/dev/null) || win_home=""
+        if [ -n "$win_home" ]; then
+            export NACOS_HOME="$win_home"
+            _pm_debug "set NACOS_HOME='$win_home' (Windows path) for startup.sh"
+        fi
+        if [ -n "${JAVA_HOME:-}" ]; then
+            local win_java_home
+            win_java_home=$(cd "$JAVA_HOME" 2>/dev/null && pwd -W 2>/dev/null) || win_java_home=""
+            if [ -n "$win_java_home" ]; then
+                export JAVA_HOME="$win_java_home"
+                _pm_debug "set JAVA_HOME='$win_java_home' (Windows path) for startup.sh"
+            fi
+        fi
+    fi
+
     # Start Nacos
     local startup_log="$install_dir/logs/nacos-setup-startup.log"
     mkdir -p "$install_dir/logs" 2>/dev/null || true
@@ -422,6 +446,13 @@ start_nacos_process() {
         else
             bash "$install_dir/bin/startup.sh" -m "$mode" >"$startup_log" 2>&1
         fi
+    fi
+
+    # Restore original NACOS_HOME (if we changed it for Windows)
+    if [ -n "$_saved_nacos_home" ]; then
+        export NACOS_HOME="$_saved_nacos_home"
+    elif [ "${NACOS_HOME:-__unset__}" != "__unset__" ] && _pm_is_windows_env; then
+        unset NACOS_HOME
     fi
     
     # Clear JAVA_OPT after starting
