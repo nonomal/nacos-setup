@@ -117,6 +117,34 @@ initialize_admin_password() {
 # Process Startup
 # ============================================================================
 
+# Find Nacos Java PID on Windows (Git Bash/MSYS/Cygwin) by matching install_dir
+# against process command line. Echoes PID or empty.
+_find_windows_nacos_pid() {
+    local install_dir="$1"
+    local install_win="$install_dir"
+    local pid=""
+
+    if command -v cygpath >/dev/null 2>&1; then
+        install_win=$(cygpath -w "$install_dir" 2>/dev/null || echo "$install_dir")
+    fi
+
+    if command -v powershell >/dev/null 2>&1; then
+        pid=$(NACOS_INSTALL_DIR="$install_win" powershell -NoProfile -Command '
+            $d = $env:NACOS_INSTALL_DIR
+            $p = Get-CimInstance Win32_Process -Filter "Name=''java.exe''" |
+                Where-Object { $_.CommandLine -and $_.CommandLine -like ("*" + $d + "*") } |
+                Select-Object -First 1 -ExpandProperty ProcessId
+            if ($p) { Write-Output $p }
+        ' 2>/dev/null | tr -d '\r' | head -1)
+    fi
+
+    if [ -z "$pid" ]; then
+        pid=$(ps -efW 2>/dev/null | grep "[j]ava" | grep "$install_dir" | awk '{print $2}' | head -1)
+    fi
+
+    printf '%s\n' "$pid"
+}
+
 # Start Nacos process
 # Parameters: install_dir, mode (standalone/cluster), use_derby (true/false)
 # Returns: PID on success, empty on failure
@@ -126,7 +154,7 @@ start_nacos_process() {
     local use_derby=${3:-true}
     
     if [ ! -d "$install_dir" ]; then
-        print_error "Installation directory not found: $install_dir"
+        print_error "Installation directory not found: $install_dir" >&2
         return 1
     fi
     
@@ -162,18 +190,13 @@ start_nacos_process() {
     _is_windows_env && is_windows=1
     
     while [ $retry_count -lt $max_retries ]; do
-        sleep 1.5
+        sleep 1
         
         if [ $is_windows -eq 1 ]; then
-            # Windows / Git Bash
-            if command -v tasklist >/dev/null 2>&1; then
-                pid=$(tasklist /fi "IMAGENAME eq java.exe" /fo csv 2>/dev/null | grep -i "$install_dir" | head -1 | cut -d',' -f2 | tr -d '"')
-            else
-                pid=$(ps -efW 2>/dev/null | grep "java" | grep "$install_dir" | grep -v grep | awk '{print $2}' | head -1)
-            fi
+            pid=$(_find_windows_nacos_pid "$install_dir")
         else
             # Linux / macOS
-            pid=$(ps aux | grep "java" | grep "$install_dir" | grep -v grep | awk '{print $2}' | head -1)
+            pid=$(ps aux | grep "[j]ava" | grep "$install_dir" | awk '{print $2}' | head -1)
         fi
         
         if [ -n "$pid" ] && ps -p "$pid" >/dev/null 2>&1; then
@@ -185,7 +208,7 @@ start_nacos_process() {
     done
     
     # Could not determine PID - but Nacos may still be starting normally
-    print_warn "Could not determine Nacos PID (may still be starting)"
+    print_warn "Could not determine Nacos PID (may still be starting)" >&2
     echo ""
     return 1
 }
