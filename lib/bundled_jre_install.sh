@@ -236,40 +236,42 @@ _bundled_ensure_unzip() {
     local os
     os=$(detect_os_arch)
 
+    # Package managers write to stdout; _bundled_jdk_acquire_zip uses $(...) and must only
+    # capture the final printf path — redirect installer output to stderr.
     case "$os" in
         linux)
             if command -v apt-get >/dev/null 2>&1; then
-                if _bundled_run_as_root env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq unzip 2>/dev/null; then
+                if _bundled_run_as_root env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq unzip 1>&2; then
                     command -v unzip >/dev/null 2>&1 && return 0
                 fi
-                if _bundled_run_as_root env DEBIAN_FRONTEND=noninteractive sh -c 'apt-get update -qq && apt-get install -y -qq unzip'; then
+                if _bundled_run_as_root env DEBIAN_FRONTEND=noninteractive sh -c 'apt-get update -qq && apt-get install -y -qq unzip' 1>&2; then
                     command -v unzip >/dev/null 2>&1 && return 0
                 fi
             fi
             if command -v dnf >/dev/null 2>&1; then
-                if _bundled_run_as_root dnf install -y unzip; then
+                if _bundled_run_as_root dnf install -y unzip 1>&2; then
                     command -v unzip >/dev/null 2>&1 && return 0
                 fi
             fi
             if command -v yum >/dev/null 2>&1; then
-                if _bundled_run_as_root yum install -y unzip; then
+                if _bundled_run_as_root yum install -y unzip 1>&2; then
                     command -v unzip >/dev/null 2>&1 && return 0
                 fi
             fi
             if command -v apk >/dev/null 2>&1; then
-                if _bundled_run_as_root apk add --no-cache unzip; then
+                if _bundled_run_as_root apk add --no-cache unzip 1>&2; then
                     command -v unzip >/dev/null 2>&1 && return 0
                 fi
             fi
             if command -v zypper >/dev/null 2>&1; then
-                if _bundled_run_as_root zypper install -y unzip; then
+                if _bundled_run_as_root zypper install -y unzip 1>&2; then
                     command -v unzip >/dev/null 2>&1 && return 0
                 fi
             fi
             ;;
         macos)
             if command -v brew >/dev/null 2>&1; then
-                if brew install unzip; then
+                if brew install unzip 1>&2; then
                     command -v unzip >/dev/null 2>&1 && return 0
                 fi
             fi
@@ -339,13 +341,20 @@ _download_extract_bundled_jre() {
 
     local zip_path
     zip_path=$(_bundled_jdk_acquire_zip "$url") || return 1
+    # $(...) must yield only the zip path; if anything wrote to stdout, keep the last non-empty line.
+    zip_path="${zip_path//$'\r'/}"
+    zip_path="$(printf '%s\n' "$zip_path" | sed '/^$/d' | tail -n1)"
+    if [ ! -f "$zip_path" ]; then
+        print_error "JDK zip path is not a readable file: ${zip_path:-<empty>}" >&2
+        return 1
+    fi
 
     mkdir -p "$BUNDLED_JRE_ROOT"
     rm -rf "${BUNDLED_JRE_ROOT:?}/"*
 
     print_detail "Extracting JDK into ${BUNDLED_JRE_ROOT}..." >&2
     if ! unzip -q "$zip_path" -d "$BUNDLED_JRE_ROOT"; then
-        print_error "Failed to extract JDK archive." >&2
+        print_error "Failed to extract JDK archive: $zip_path" >&2
         return 1
     fi
 
