@@ -63,6 +63,14 @@ function Find-SkillScannerOnPath {
 # uv helpers
 # ============================================================================
 
+function Normalize-UvCommandOutput($output) {
+    if ($null -eq $output) { return '' }
+    if ($output -is [System.Array]) {
+        return ([string]($output | Select-Object -First 1)).Trim()
+    }
+    return ([string]$output).Trim()
+}
+
 function Test-UvOnPath {
     return ($null -ne (Get-Command "uv" -ErrorAction SilentlyContinue))
 }
@@ -86,11 +94,28 @@ function Refresh-PathForUv {
 # Install uv via the official Windows PowerShell installer
 function Install-Uv {
     Write-Info "Installing uv (https://astral.sh/uv/) via official installer..."
+    $tmpScript = $null
     try {
-        $installScript = (Invoke-WebRequest -Uri "https://astral.sh/uv/install.ps1" -UseBasicParsing).Content
+        # Avoid Invoke-WebRequest .Content as string: on some hosts it is byte[] and breaks Invoke-Expression.
+        $tmpScript = Join-Path $env:TEMP ("uv-official-install-" + [Guid]::NewGuid().ToString() + ".ps1")
+        $prevProgress = $ProgressPreference
+        $ProgressPreference = 'SilentlyContinue'
+        try {
+            Invoke-WebRequest -Uri "https://astral.sh/uv/install.ps1" -UseBasicParsing -OutFile $tmpScript
+        } finally {
+            $ProgressPreference = $prevProgress
+        }
+        if (-not (Test-Path -LiteralPath $tmpScript) -or ((Get-Item -LiteralPath $tmpScript).Length -lt 32)) {
+            Write-Warn "Downloaded uv installer script is missing or too small."
+            return $false
+        }
+        $installScript = Get-Content -LiteralPath $tmpScript -Raw -Encoding UTF8
+        if (-not $installScript -or $installScript.Length -lt 32) {
+            Write-Warn "Could not read uv installer script as UTF-8 text."
+            return $false
+        }
         $env:UV_PRINT_QUIET = "1"
         Invoke-Expression $installScript
-        Remove-Item Env:UV_PRINT_QUIET -ErrorAction SilentlyContinue
         Refresh-PathForUv
         if (Test-UvOnPath) {
             Write-Info "uv installed: $((Get-Command uv).Source)"
@@ -102,6 +127,11 @@ function Install-Uv {
         Write-Warn "Automatic uv installation failed: $($_.Exception.Message)"
         Write-Warn "Install manually: https://docs.astral.sh/uv/getting-started/installation/"
         return $false
+    } finally {
+        Remove-Item Env:UV_PRINT_QUIET -ErrorAction SilentlyContinue
+        if ($tmpScript -and (Test-Path -LiteralPath $tmpScript)) {
+            Remove-Item -LiteralPath $tmpScript -Force -ErrorAction SilentlyContinue
+        }
     }
 }
 
@@ -152,8 +182,8 @@ function Ensure-Python310WithUv {
     Add-PathDirIfMissing (Join-Path $skillScannerUserDir ".local\share\uv\python")
 
     try {
-        $pyPath = (& uv python find 3.10 2>$null).Trim()
-        if ($pyPath -and (Test-Path $pyPath)) {
+        $pyPath = Normalize-UvCommandOutput (& uv python find 3.10 2>$null)
+        if ($pyPath -and (Test-Path -LiteralPath $pyPath)) {
             Write-Info "Python 3.10 ready: $pyPath"
             return $pyPath
         }
@@ -173,8 +203,8 @@ function New-SkillScannerVenv($pyExe, $venvDir) {
 
     $pyArg = $pyExe
     try {
-        $found310 = (& uv python find 3.10 2>$null).Trim()
-        if ($found310 -and (Test-Path $found310)) { $pyArg = "3.10" }
+        $found310 = Normalize-UvCommandOutput (& uv python find 3.10 2>$null)
+        if ($found310 -and (Test-Path -LiteralPath $found310)) { $pyArg = "3.10" }
     } catch {}
 
     Write-SkillScannerTrace "Creating venv at $venvDir with python=$pyArg"
