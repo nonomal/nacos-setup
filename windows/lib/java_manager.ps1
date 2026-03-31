@@ -196,6 +196,8 @@ function Install-BundledJre17 {
 
     if ($needDownload) {
         Write-Info "Downloading JDK 17: $url"
+        $prevProgress = $ProgressPreference
+        $ProgressPreference = "SilentlyContinue"
         try {
             if ($PSVersionTable.PSVersion.Major -lt 6) {
                 Invoke-WebRequest -UseBasicParsing -Uri $url -OutFile $cached
@@ -206,6 +208,8 @@ function Install-BundledJre17 {
             Write-Warn "Failed to download bundled JDK 17: $($_.Exception.Message)"
             Remove-Item $cached -ErrorAction SilentlyContinue
             return $false
+        } finally {
+            $ProgressPreference = $prevProgress
         }
     }
 

@@ -2,6 +2,8 @@
 # Native PowerShell implementation (no WSL required)
 
 $ErrorActionPreference = "Stop"
+# PS 5.1: default progress UI throttles Invoke-WebRequest to ~KB/s on large files; disable for downloads.
+$ProgressPreference    = "SilentlyContinue"
 
 # =============================
 # Helper functions (define before loading scripts)

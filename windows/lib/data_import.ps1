@@ -67,6 +67,8 @@ function Get-DefaultDataArchive {
     }
 
     Write-Info "Downloading $ArchiveName from $ArchiveUrl"
+    $prevProgress = $ProgressPreference
+    $ProgressPreference = "SilentlyContinue"
     try {
         if ($PSVersionTable.PSVersion.Major -lt 6) {
             Invoke-WebRequest -UseBasicParsing -Uri $ArchiveUrl -OutFile $cachedFile
@@ -77,6 +79,8 @@ function Get-DefaultDataArchive {
         Write-Warn "Failed to download $ArchiveName from $ArchiveUrl"
         Remove-Item -Path $cachedFile -Force -ErrorAction SilentlyContinue
         return $null
+    } finally {
+        $ProgressPreference = $prevProgress
     }
 
     if (Test-ZipArchiveValid $cachedFile) {

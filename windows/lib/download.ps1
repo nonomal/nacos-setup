@@ -14,11 +14,16 @@ function Download-File($url, $output) {
     $headers = @{
         "Referer" = $Global:RefererUrl
     }
-    
-    if ($PSVersionTable.PSVersion.Major -lt 6) {
-        Invoke-WebRequest -UseBasicParsing -Uri $url -OutFile $output -Headers $headers
-    } else {
-        Invoke-WebRequest -Uri $url -OutFile $output -Headers $headers
+    $prevProgress = $ProgressPreference
+    $ProgressPreference = "SilentlyContinue"
+    try {
+        if ($PSVersionTable.PSVersion.Major -lt 6) {
+            Invoke-WebRequest -UseBasicParsing -Uri $url -OutFile $output -Headers $headers
+        } else {
+            Invoke-WebRequest -Uri $url -OutFile $output -Headers $headers
+        }
+    } finally {
+        $ProgressPreference = $prevProgress
     }
 }
 
