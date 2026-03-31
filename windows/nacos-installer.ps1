@@ -16,6 +16,16 @@
 $ErrorActionPreference = "Stop"
 $ProgressPreference    = "SilentlyContinue"
 
+# HTTPS to download.nacos.io requires TLS 1.2+ on older Windows / PS 5.1 (defaults to TLS 1.0)
+try {
+    [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12 -bor [Net.SecurityProtocolType]::Tls13
+} catch {
+    try { [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12 } catch { }
+}
+
+# ZipFile / Expand-Archive need this assembly in some hosts
+try { Add-Type -AssemblyName System.IO.Compression.FileSystem -ErrorAction Stop } catch { }
+
 Write-Host ""
 Write-Host "========================================"
 Write-Host "  Nacos Setup Installer (Windows)"
@@ -84,29 +94,79 @@ function Refresh-SessionPath {
     Write-Info "PATH refreshed in current session"
 }
 
-function Download-File($url, $output) {
-    Write-Info "Downloading: $url"
+function Download-File-WebClient($url, $output) {
+    Write-Info "Downloading (WebClient): $url"
+    $wc = New-Object System.Net.WebClient
     try {
-        if ($PSVersionTable.PSVersion.Major -lt 6) {
-            Invoke-WebRequest -UseBasicParsing -Uri $url -OutFile $output -ErrorAction Stop
-        } else {
-            Invoke-WebRequest -Uri $url -OutFile $output -ErrorAction Stop
-        }
-    } catch {
-        Write-ErrorMsg "Download failed: $($_.Exception.Message)"
-        throw
+        $wc.DownloadFile($url, $output)
+    } finally {
+        if ($wc) { $wc.Dispose() }
     }
 }
 
-# Test if a zip file is valid (non-empty and can be opened)
+function Download-File($url, $output) {
+    Write-Info "Downloading: $url"
+    try {
+        # -UseBasicParsing avoids legacy IE parsing; use for all PS versions for binary payloads
+        Invoke-WebRequest -UseBasicParsing -Uri $url -OutFile $output -ErrorAction Stop
+    } catch {
+        Write-Warn "Invoke-WebRequest failed: $($_.Exception.Message)"
+        try {
+            Download-File-WebClient $url $output
+        } catch {
+            Write-ErrorMsg "Download failed: $($_.Exception.Message)"
+            throw
+        }
+    }
+}
+
+# ZIP local file header starts with PK (0x50 0x4B); catches HTML error pages saved as .zip
+function Test-ZipLocalHeader($path) {
+    if (-not (Test-Path $path)) { return $false }
+    try {
+        $fs = [System.IO.File]::OpenRead($path)
+        try {
+            $buf = New-Object byte[] 4
+            $n = $fs.Read($buf, 0, 4)
+            if ($n -lt 4) { return $false }
+            return ($buf[0] -eq 0x50 -and $buf[1] -eq 0x4B)
+        } finally { $fs.Close() }
+    } catch { return $false }
+}
+
+# Test if a zip file is valid (non-empty, PK header, and can be opened by .NET)
 function Test-ZipValid($path) {
     if (-not (Test-Path $path)) { return $false }
-    if ((Get-Item $path).Length -eq 0) { return $false }
+    $len = (Get-Item $path).Length
+    if ($len -lt 22) { return $false } # minimum zip size
+    if (-not (Test-ZipLocalHeader $path)) { return $false }
     try {
         $zip = [System.IO.Compression.ZipFile]::OpenRead($path)
         $zip.Dispose()
         return $true
     } catch { return $false }
+}
+
+# Download a .zip from CDN; retry with WebClient if IWR yields a non-zip (e.g. TLS / HTML error body)
+function Download-ZipWithValidation($url, $zipPath) {
+    if (Test-Path $zipPath) { Remove-Item $zipPath -Force }
+    Download-File $url $zipPath
+    if (-not (Test-ZipValid $zipPath)) {
+        Write-Warn "First download did not validate as a zip (TLS or proxy issue is common); retrying with WebClient..."
+        Remove-Item $zipPath -Force -ErrorAction SilentlyContinue
+        try {
+            Download-File-WebClient $url $zipPath
+        } catch {
+            Write-ErrorMsg "Retry download failed: $($_.Exception.Message)"
+            return $false
+        }
+        if (-not (Test-ZipValid $zipPath)) {
+            Write-ErrorMsg "Downloaded file is not a valid zip: $zipPath (check URL or delete cache folder and retry)"
+            Remove-Item $zipPath -Force -ErrorAction SilentlyContinue
+            return $false
+        }
+    }
+    return $true
 }
 
 function Remove-DirectorySafe($path) {
@@ -393,7 +453,7 @@ if ($CliVersion) {
 Ensure-Directory $CacheDir
 
 if ($isAdmin) {
-    Write-Warn "Running as Administrator — installing to user directory: $realUserProfile"
+    Write-Warn "Running as Administrator - installing to user directory: $realUserProfile"
 }
 
 # ============================================================
@@ -411,11 +471,7 @@ function Install-NacosCli {
     if (Test-ZipValid $zipPath) {
         Write-Info "Found cached package: $zipPath"
     } else {
-        if (Test-Path $zipPath) { Remove-Item $zipPath -Force }
-        Download-File $dlUrl $zipPath
-        if (-not (Test-ZipValid $zipPath)) {
-            Write-ErrorMsg "Downloaded file is not a valid zip: $zipPath"
-            Remove-Item $zipPath -Force -ErrorAction SilentlyContinue
+        if (-not (Download-ZipWithValidation $dlUrl $zipPath)) {
             return $false
         }
     }
@@ -499,11 +555,7 @@ function Install-NacosSetup {
     if (Test-ZipValid $zipPath) {
         Write-Info "Found cached package: $zipPath"
     } else {
-        if (Test-Path $zipPath) { Remove-Item $zipPath -Force }
-        Download-File $dlUrl $zipPath
-        if (-not (Test-ZipValid $zipPath)) {
-            Write-ErrorMsg "Downloaded file is not a valid zip: $zipPath"
-            Remove-Item $zipPath -Force -ErrorAction SilentlyContinue
+        if (-not (Download-ZipWithValidation $dlUrl $zipPath)) {
             throw "Invalid package: $zipPath"
         }
         Write-Info "Download completed: $zipName"
