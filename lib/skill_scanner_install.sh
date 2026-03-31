@@ -77,6 +77,36 @@ _skill_scanner_venv_python_exists() {
     return 1
 }
 
+# Cross-platform temporary directory (supports Windows/Git Bash/MSYS)
+_skill_scanner_get_temp_dir() {
+    # Prefer native Windows temp if available (Git Bash/MSYS)
+    if [ -n "${TEMP:-}" ] && [ -d "$TEMP" ]; then
+        printf '%s\n' "$TEMP"
+        return 0
+    fi
+    if [ -n "${TMP:-}" ] && [ -d "$TMP" ]; then
+        printf '%s\n' "$TMP"
+        return 0
+    fi
+    # Fallback to TMPDIR or /tmp
+    if [ -n "${TMPDIR:-}" ] && [ -d "$TMPDIR" ]; then
+        printf '%s\n' "$TMPDIR"
+        return 0
+    fi
+    # Ensure /tmp exists (create if needed on Windows/Git Bash)
+    if [ -d "/tmp" ]; then
+        printf '%s\n' "/tmp"
+        return 0
+    fi
+    # On Windows/Git Bash, /tmp may not exist - use HOME as fallback
+    if [ -n "${HOME:-}" ] && [ -d "$HOME" ]; then
+        printf '%s\n' "$HOME"
+        return 0
+    fi
+    # Last resort: use current directory
+    printf '%s\n' "."
+}
+
 # Nacos on Windows uses JVM + ProcessBuilder; prefer C:/... (cygpath -m) for properties and exec.
 _skill_scanner_path_for_nacos_server() {
     local p="$1"
@@ -369,7 +399,28 @@ _skill_scanner_bootstrap_uv() {
 
 _find_python_310_plus() {
     local out
+    # On Windows/Git Bash, also try common Python installation locations
+    local extra_paths=""
+    if _skill_scanner_is_windows_env; then
+        # Add common Windows Python locations to PATH for the search
+        local win_paths=""
+        if [ -n "${LOCALAPPDATA:-}" ]; then
+            # Windows Store Python, uv-installed Python, etc.
+            for d in "$LOCALAPPDATA"/Microsoft/WindowsApps \
+                     "$LOCALAPPDATA"/uv/python/*/install \
+                     "$LOCALAPPDATA"/Programs/Python/Python3*; do
+                if [ -d "$d" ]; then
+                    win_paths="${win_paths}${win_paths:+:}$d"
+                fi
+            done
+        fi
+        if [ -n "$win_paths" ]; then
+            extra_paths="export PATH=\"$win_paths:\$PATH\"; "
+        fi
+    fi
+
     if ! out=$(_skill_scanner_runas_target_user bash -c '
+        '"$extra_paths"'
         for c in python3.13 python3.12 python3.11 python3.10 python3; do
             if command -v "$c" >/dev/null 2>&1 && "$c" -c "import sys; raise SystemExit(0 if sys.version_info >= (3, 10) else 1)" 2>/dev/null; then
                 command -v "$c"
@@ -404,8 +455,9 @@ _ensure_python_310_plus_with_uv() {
     local quiet_py_install=0
     _skill_scanner_uv_use_quiet_output && quiet_py_install=1
     if [ "$quiet_py_install" -eq 1 ]; then
-        local logf
-        logf=$(mktemp "${TMPDIR:-/tmp}/nacos-setup-uv-python-install.XXXXXX" 2>/dev/null) || logf=""
+        local logf tmp_dir
+        tmp_dir=$(_skill_scanner_get_temp_dir)
+        logf=$(mktemp "${tmp_dir}/nacos-setup-uv-python-install.XXXXXX" 2>/dev/null) || logf=""
         if [ -n "$logf" ]; then
             if _skill_scanner_runas_target_user env UV_NO_PROGRESS=1 uv python install 3.10 >"$logf" 2>&1; then
                 py_install_ok=1
@@ -430,14 +482,74 @@ _ensure_python_310_plus_with_uv() {
     fi
     py_exe=""
     if [ "$py_install_ok" -eq 1 ]; then
+        # After installing Python with uv, ensure the new Python is discoverable
+        # by refreshing PATH for uv-managed Python locations
+        _skill_scanner_refresh_path_for_uv_python
         py_exe=$(_skill_scanner_runas_target_user uv python find 3.10 2>/dev/null || true)
         py_exe=$(printf '%s' "$py_exe" | tr -d '\r' | awk 'NF {print; exit}')
     fi
 
-    if [ -n "$py_exe" ] && _skill_scanner_runas_target_user "$py_exe" -c "import sys; raise SystemExit(0 if sys.version_info >= (3, 10) else 1)" 2>/dev/null; then
-        print_info "Python 3.10 ready: $py_exe" >&2
+    if [ -n "$py_exe" ]; then
+        # Verify and potentially get a better path (especially on Windows)
+        local verified_py
+        verified_py=$(_skill_scanner_verify_python310 "$py_exe")
+        if [ -n "$verified_py" ]; then
+            print_info "Python 3.10 ready: $verified_py" >&2
+            printf '%s\n' "$verified_py"
+            return 0
+        fi
+    fi
+
+    return 1
+}
+
+# Refresh PATH to include uv-managed Python locations (for after Python installation)
+_skill_scanner_refresh_path_for_uv_python() {
+    local home
+    home=$(_skill_scanner_runas_target_user bash -c 'printf %s "$HOME"')
+    # uv installs Python to ~/.local/share/uv/python on Unix
+    # and %LOCALAPPDATA%\uv\python on Windows
+    if _skill_scanner_is_windows_env; then
+        # On Windows/Git Bash, also check Windows native paths
+        if [ -n "${LOCALAPPDATA:-}" ] && [ -d "$LOCALAPPDATA/uv/python" ]; then
+            _skill_scanner_prepend_path_dir "$LOCALAPPDATA/uv/python"
+        fi
+        # Try to convert Windows path to Git Bash format
+        if [ -d "$home/.local/share/uv/python" ]; then
+            _skill_scanner_prepend_path_dir "$home/.local/share/uv/python"
+        fi
+    else
+        _skill_scanner_prepend_path_dir "$home/.local/share/uv/python"
+    fi
+    # Also ensure uv itself is still on PATH
+    _skill_scanner_refresh_path_for_uv
+}
+
+# Verify Python 3.10+ with cross-platform support.
+# On success, prints the verified Python path to stdout and returns 0.
+# On failure, prints nothing and returns 1.
+_skill_scanner_verify_python310() {
+    local py_exe="$1"
+    [ -z "$py_exe" ] && return 1
+
+    # On Windows/Git Bash, the path might be in Windows format (C:\...)
+    # Try to run it directly first
+    if _skill_scanner_runas_target_user "$py_exe" -c "import sys; raise SystemExit(0 if sys.version_info >= (3, 10) else 1)" 2>/dev/null; then
         printf '%s\n' "$py_exe"
         return 0
+    fi
+
+    # If direct execution failed on Windows, try finding via PATH
+    if _skill_scanner_is_windows_env; then
+        # The path might be Windows-style; try finding python via PATH instead
+        local py_from_path
+        py_from_path=$(_skill_scanner_runas_target_user bash -c 'command -v python3.10 2>/dev/null || command -v python3 2>/dev/null || command -v python 2>/dev/null || true')
+        if [ -n "$py_from_path" ]; then
+            if _skill_scanner_runas_target_user "$py_from_path" -c "import sys; raise SystemExit(0 if sys.version_info >= (3, 10) else 1)" 2>/dev/null; then
+                printf '%s\n' "$py_from_path"
+                return 0
+            fi
+        fi
     fi
 
     return 1
@@ -473,7 +585,9 @@ _create_skill_scanner_venv_with_uv() {
         return 1
     fi
 
-    logf="${TMPDIR:-/tmp}/nacos-setup-uv-venv.$$.log"
+    local tmp_dir
+    tmp_dir=$(_skill_scanner_get_temp_dir)
+    logf="${tmp_dir}/nacos-setup-uv-venv.$$.log"
 
     # Avoid `uv -q venv` here for the same reason as python install (interpreter resolution).
     local py_for_venv=$py_exe
