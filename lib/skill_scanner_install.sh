@@ -24,8 +24,18 @@ _skill_scanner_is_windows_env() {
     esac
     case "$(uname -s 2>/dev/null)" in
         CYGWIN* | MINGW* | MSYS*) return 0 ;;
-        *) return 1 ;;
+        *) ;;
     esac
+    # WSL may inherit WINDIR/OS from Windows; still use Linux venv layout (bin/), not Scripts/.
+    if [ -n "${WSL_DISTRO_NAME:-}" ] || [ -n "${WSL_INTEROP:-}" ]; then
+        return 1
+    fi
+    # Git Bash edge cases: missing MSYS in OSTYPE/uname but native Windows env is visible.
+    case "${OS:-}" in
+        Windows_NT) return 0 ;;
+    esac
+    [ -n "${WINDIR:-}" ] || [ -n "${SYSTEMROOT:-}" ] && return 0
+    return 1
 }
 
 # Directory containing venv console_scripts / python (bin vs Scripts).
@@ -389,19 +399,29 @@ _ensure_python_310_plus_with_uv() {
     fi
     print_info "Installing Python 3.10 with uv (this may take a moment)..." >&2
     local py_install_ok=0
-    # Do not use `uv -q python install`: on some uv versions -q can return before the
-    # interpreter is fully materialized, and a later `uv -q venv --python <path>` then fails
-    # with "No interpreter found" while verbose (non -q) works. Keep UI quiet via redirects + UV_NO_PROGRESS only.
-    # Git Bash / MSYS: discarding all stdout/stderr (`>/dev/null`) often makes `uv python install` exit non-zero or
-    # leave no discoverable interpreter while the same command works when output goes to a TTY (matches --adv mode).
-    local quiet_py_install
-    quiet_py_install=0
-    if _skill_scanner_uv_use_quiet_output && ! _skill_scanner_is_windows_env; then
-        quiet_py_install=1
-    fi
+    # Do not use `uv -q python install`: on some uv versions -q can return early.
+    # Simple UI: UV_NO_PROGRESS + write output to a temp file — not /dev/null (Git Bash/MSYS often fails with no TTY).
+    local quiet_py_install=0
+    _skill_scanner_uv_use_quiet_output && quiet_py_install=1
     if [ "$quiet_py_install" -eq 1 ]; then
-        if _skill_scanner_runas_target_user env UV_NO_PROGRESS=1 uv python install 3.10 >/dev/null 2>&1; then
-            py_install_ok=1
+        local logf
+        logf=$(mktemp "${TMPDIR:-/tmp}/nacos-setup-uv-python-install.XXXXXX" 2>/dev/null) || logf=""
+        if [ -n "$logf" ]; then
+            if _skill_scanner_runas_target_user env UV_NO_PROGRESS=1 uv python install 3.10 >"$logf" 2>&1; then
+                py_install_ok=1
+            else
+                if [ -s "$logf" ]; then
+                    print_warn "uv python install 3.10 output:" >&2
+                    while IFS= read -r line || [ -n "$line" ]; do
+                        print_warn "  $line" >&2
+                    done < "$logf"
+                fi
+            fi
+            rm -f "$logf" 2>/dev/null || true
+        else
+            if _skill_scanner_runas_target_user env UV_NO_PROGRESS=1 uv python install 3.10 >&2; then
+                py_install_ok=1
+            fi
         fi
     else
         if _skill_scanner_runas_target_user uv python install 3.10 >&2; then
