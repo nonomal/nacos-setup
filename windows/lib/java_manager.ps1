@@ -74,7 +74,7 @@ function Check-JavaRequirements($nacosVersion, $advancedMode) {
         $major = [int]($nacosVersion.Split('.')[0])
         if ($major -ge 3) {
             $required = 17
-            Write-Info "Nacos $nacosVersion requires Java 17 or later"
+            Write-Detail "Nacos $nacosVersion requires Java 17 or later"
         }
     }
 
@@ -84,7 +84,7 @@ function Check-JavaRequirements($nacosVersion, $advancedMode) {
     if ($env:JAVA_HOME -and (Test-Path (Join-Path $env:JAVA_HOME "bin\java.exe"))) {
         $javaCmd = Join-Path $env:JAVA_HOME "bin\java.exe"
         $javaVersion = Get-JavaVersion $javaCmd
-        Write-Info "Found Java from JAVA_HOME: $env:JAVA_HOME (version: $javaVersion)"
+        Write-Detail "Found Java from JAVA_HOME: $env:JAVA_HOME (version: $javaVersion)"
         if ($javaVersion -lt $required) { $javaCmd = $null }
     }
 
@@ -92,7 +92,7 @@ function Check-JavaRequirements($nacosVersion, $advancedMode) {
         $javaCmd = Find-JavaInPath
         if ($javaCmd) {
             $javaVersion = Get-JavaVersion $javaCmd
-            Write-Info "Found Java in PATH (version: $javaVersion)"
+            Write-Detail "Found Java in PATH (version: $javaVersion)"
             if ($javaVersion -lt $required) { $javaCmd = $null }
         }
     }
@@ -107,7 +107,7 @@ function Check-JavaRequirements($nacosVersion, $advancedMode) {
         return $false
     }
 
-    Write-Info "Java version: $javaVersion - OK"
+    Write-Detail "Java version: $javaVersion - OK"
     return $true
 }
 
@@ -209,12 +209,12 @@ function Install-BundledJre17 {
 
     $needDownload = $true
     if ((Test-Path $cached) -and (Get-Item $cached).Length -gt 0) {
-        Write-Info "Found cached JDK package: $cached"
+        Write-Detail "Found cached JDK package: $cached"
         $needDownload = $false
     }
 
     if ($needDownload) {
-        Write-Info "Downloading JDK 17: $url"
+        Write-Detail "Downloading JDK 17: $url"
         $prevProgress = $ProgressPreference
         $ProgressPreference = "SilentlyContinue"
         try {
@@ -236,7 +236,7 @@ function Install-BundledJre17 {
     if (Test-Path $root) { Remove-Item $root -Recurse -Force -ErrorAction SilentlyContinue }
     Ensure-Directory $root
 
-    Write-Info "Extracting JDK 17 into $root..."
+    Write-Detail "Extracting JDK 17 into $root..."
     try {
         Expand-Archive -Path $cached -DestinationPath $root -Force -ErrorAction Stop
     } catch {
@@ -244,9 +244,9 @@ function Install-BundledJre17 {
         return $false
     }
 
-    Write-Info "Verifying bundled JDK layout..."
+    Write-Detail "Verifying bundled JDK layout..."
     if (Apply-BundledJavaHomeFromDir $root) {
-        Write-Info "Bundled JDK 17 ready: JAVA_HOME=$env:JAVA_HOME"
+        Write-Detail "Bundled JDK 17 ready: JAVA_HOME=$env:JAVA_HOME"
         return $true
     }
     Write-Warn "Extracted archive does not contain a usable Java 17 binary"
@@ -295,7 +295,7 @@ function Ensure-BundledJava17ForNacosSetup($nacosVersion) {
 
     # Try reusing cached bundled JRE
     if (Test-BundledJrePresent) {
-        Write-Info "Using existing bundled JRE at JAVA_HOME=$env:JAVA_HOME"
+        Write-Detail "Using existing bundled JRE at JAVA_HOME=$env:JAVA_HOME"
         return $true
     }
 

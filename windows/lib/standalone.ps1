@@ -364,26 +364,48 @@ function Show-CompletionInfo {
         [string]$Username,
         [string]$Password
     )
-    
+
+    # Align with bash lib/process_manager.sh print_completion_info (quiet unless -x/--verbose)
+    $nacosMajor = [int]($Version.Split('.')[0])
+
     Write-Host ""
     Write-Host "========================================"
-    Write-Success "Nacos Installation Completed!"
+    Write-Info "Nacos Started Successfully!"
     Write-Host "========================================"
     Write-Host ""
-    Write-Info "Installation directory: $InstallDir"
+    Write-Host "  Console URL: $ConsoleUrl"
     Write-Host ""
-    Write-Info "Console URL: $ConsoleUrl"
-    Write-Host ""
-    
-    if ($Password) {
-        Write-Info "Login credentials:"
+    if (Test-NacosSetupVerbose) {
+        Write-Host "  Installation: $InstallDir"
+        Write-Host ""
+        Write-Info "Port allocation:"
+        Write-Host "  - Server Port: $ServerPort"
+        Write-Host "  - Client gRPC Port: $($ServerPort + 1000)"
+        Write-Host "  - Server gRPC Port: $($ServerPort + 1001)"
+        Write-Host "  - Raft Port: $($ServerPort - 1000)"
+        if ($nacosMajor -ge 3) { Write-Host "  - Console Port: $ConsolePort" }
+        Write-Host ""
+    }
+    if ($Password -and $Password -ne "nacos") {
+        Write-Host "Authentication is enabled. Please login with:"
         Write-Host "  Username: $Username"
         Write-Host "  Password: $Password"
+    } elseif ($Password -eq "nacos") {
+        Write-Host "Default login credentials:"
+        Write-Host "  Username: nacos"
+        Write-Host "  Password: nacos"
+        Write-Host ""
+        Write-Warn "SECURITY WARNING: Using default password!"
+        Write-Info "Please change the password after login for security"
+    } else {
+        Write-Host "Authentication is enabled."
+        Write-Host "Please login with your previously set credentials."
+        Write-Host ""
+        Write-Info "If you forgot the password, please reset it manually"
     }
-    
     Write-Host ""
     Write-Host "========================================"
-    Write-Success "Perfect !"
+    Write-Host "Perfect !"
     Write-Host "========================================"
 }
 

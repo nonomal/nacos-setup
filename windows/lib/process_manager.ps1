@@ -58,24 +58,30 @@ function Wait-ForNacosReady($mainPort, $consolePort, $version, $maxWait) {
     if (-not $maxWait) { $maxWait = 60 }
     $major = [int]($version.Split('.')[0])
     $healthUrl = if ($major -ge 3) { "http://localhost:$consolePort/v3/console/health/readiness" } else { "http://localhost:$mainPort/nacos/v2/console/health/readiness" }
-    
-    Write-Host -NoNewline "[INFO] Waiting for Nacos to be ready..."
-    for ($i=0; $i -lt $maxWait; $i++) {
+
+    $verboseWait = $false
+    if (Get-Command Test-NacosSetupVerbose -ErrorAction SilentlyContinue) { $verboseWait = Test-NacosSetupVerbose }
+
+    # Align with bash wait_for_nacos_ready: progress line only when VERBOSE
+    if ($verboseWait) {
+        Write-Host -NoNewline "[INFO] Waiting for Nacos to be ready..."
+    }
+    for ($i = 0; $i -lt $maxWait; $i++) {
         try {
             if ($PSVersionTable.PSVersion.Major -lt 6) {
                 $r = Invoke-WebRequest -UseBasicParsing -Uri $healthUrl -Method Get -TimeoutSec 5
             } else {
                 $r = Invoke-WebRequest -Uri $healthUrl -Method Get -TimeoutSec 5
             }
-            if ($r.StatusCode -ge 200 -and $r.StatusCode -lt 300) { 
-                Write-Host " Done." -ForegroundColor Green
-                return $true 
+            if ($r.StatusCode -ge 200 -and $r.StatusCode -lt 300) {
+                if ($verboseWait) { Write-Host " Done." -ForegroundColor Green }
+                return $true
             }
         } catch {}
-        Write-Host -NoNewline "."
+        if ($verboseWait) { Write-Host -NoNewline "." }
         Start-Sleep -Seconds 1
     }
-    Write-Host " Timeout!" -ForegroundColor Red
+    if ($verboseWait) { Write-Host " Timeout!" -ForegroundColor Red }
     return $false
 }
 
@@ -95,21 +101,28 @@ function Initialize-AdminPassword($mainPort, $consolePort, $version, $password) 
 }
 
 function Print-CompletionInfo($installDir, $consoleUrl, $serverPort, $consolePort, $version, $username, $password) {
+    $nacosMajor = [int]($version.Split('.')[0])
+    $verbose = $false
+    if (Get-Command Test-NacosSetupVerbose -ErrorAction SilentlyContinue) { $verbose = Test-NacosSetupVerbose }
+
     Write-Host ""
     Write-Host "========================================"
     Write-Info "Nacos Started Successfully!"
     Write-Host "========================================"
     Write-Host ""
-    Write-Host "Installation Directory: $installDir"
-    Write-Host "Console URL: $consoleUrl"
+    Write-Host "  Console URL: $consoleUrl"
     Write-Host ""
-    Write-Info "Port allocation:"
-    Write-Host "  - Server Port: $serverPort"
-    Write-Host "  - Client gRPC Port: $($serverPort + 1000)"
-    Write-Host "  - Server gRPC Port: $($serverPort + 1001)"
-    Write-Host "  - Raft Port: $($serverPort - 1000)"
-    if ([int]($version.Split('.')[0]) -ge 3) { Write-Host "  - Console Port: $consolePort" }
-    Write-Host ""
+    if ($verbose) {
+        Write-Host "  Installation: $installDir"
+        Write-Host ""
+        Write-Info "Port allocation:"
+        Write-Host "  - Server Port: $serverPort"
+        Write-Host "  - Client gRPC Port: $($serverPort + 1000)"
+        Write-Host "  - Server gRPC Port: $($serverPort + 1001)"
+        Write-Host "  - Raft Port: $($serverPort - 1000)"
+        if ($nacosMajor -ge 3) { Write-Host "  - Console Port: $consolePort" }
+        Write-Host ""
+    }
     if ($password -and $password -ne "nacos") {
         Write-Host "Authentication is enabled. Please login with:"
         Write-Host "  Username: $username"
