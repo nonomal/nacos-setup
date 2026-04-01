@@ -257,7 +257,7 @@ function Install-BundledJre17 {
 # Returns $true if user accepts, $false if declined or non-interactive.
 function Confirm-BundledJreInstall {
     $dl = Get-BundledJdkUrl
-    $prompt = "Java 17+ not found. Download JDK 17 from OSS ($dl) and install under $($script:BundledJreRoot)? (Y/n): "
+    $prompt = "Java 17+ not found. Download JDK 17 from OSS ($dl) and install under $($script:BundledJreRoot)? (Y/n)"
     try {
         $answer = Read-Host $prompt
         if ($answer -match '^[Nn]') { return $false }
