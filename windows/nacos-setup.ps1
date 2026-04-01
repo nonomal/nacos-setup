@@ -260,7 +260,7 @@ function Print-Usage {
     Write-Host "  -db-conf [NAME]          Use external datasource (default: default)"
     Write-Host "  db-conf edit [NAME]      Edit datasource configuration"
     Write-Host "  db-conf show [NAME]      Show datasource configuration"
-    Write-Host "  -x, --verbose            Verbose output (detailed logs)"
+    Write-Host "  -x, --verbose            Verbose output (detailed logs; or env NACOS_SETUP_VERBOSE=1)"
     Write-Host "  -h, --help               Show this help message"
     Write-Host ""
     Write-Host "Cluster Options:"
@@ -344,8 +344,8 @@ function Parse-Arguments($argv) {
             "--join" { $Global:JoinMode = $true; $i++ }
             "--no-start" { $Global:AutoStart = $false; $i++ }
             "--kill" { $Global:AllowKill = $true; $i++ }
-            "-x" { $Global:NacosSetupVerbose = $true; $env:VERBOSE = "true"; $i++ }
-            "--verbose" { $Global:NacosSetupVerbose = $true; $env:VERBOSE = "true"; $i++ }
+            "-x" { $Global:NacosSetupVerbose = $true; $env:NACOS_SETUP_VERBOSE = "true"; $i++ }
+            "--verbose" { $Global:NacosSetupVerbose = $true; $env:NACOS_SETUP_VERBOSE = "true"; $i++ }
             default { $argsList += $arg; $i++ }
         }
     }

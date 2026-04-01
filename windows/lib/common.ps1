@@ -5,11 +5,15 @@ $Global:ColorWarn = "Yellow"
 $Global:ColorError = "Red"
 $Global:ColorSuccess = "Green"
 
-# Align with bash nacos-setup.sh VERBOSE / print_detail
+# Align with bash nacos-setup.sh VERBOSE / print_detail.
+# Do NOT treat generic $env:VERBOSE as nacos-setup verbose: many shells/CI set VERBOSE=true
+# for unrelated tools, which would flood the console with Write-Detail and disable uv stream suppression.
 $Global:NacosSetupVerbose = $false
 
 function Test-NacosSetupVerbose {
-    return ($Global:NacosSetupVerbose -eq $true) -or ($env:VERBOSE -eq "true")
+    if ($Global:NacosSetupVerbose -eq $true) { return $true }
+    if ($env:NACOS_SETUP_VERBOSE -in @("1", "true", "TRUE", "yes", "YES")) { return $true }
+    return $false
 }
 
 function Write-Detail($msg) {
