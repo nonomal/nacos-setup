@@ -35,15 +35,17 @@ function Write-NacosSetupStepFail($current, $total, $desc, $result = "failed") {
     Write-Host ('[{0}/{1}] {2} FAILED {3}' -f $current, $total, $desc, $result) -ForegroundColor $Global:ColorError
 }
 
-$script:NacosSetupProgressSlot = 0
+# Simple UI: avoid Write-Progress during long steps (Download-Nacos, etc.). On Windows PowerShell 5.1,
+# Write-Progress + Invoke-WebRequest commonly causes severe slowdown or a frozen console — a regression
+# when generic $env:VERBOSE=true used to skip this path via Test-NacosSetupVerbose. Use one status line
+# per step instead (similar to bash step_simple_*).
 function Start-NacosSetupStepProgress($current, $total, $desc) {
     if (Test-NacosSetupVerbose) { return }
-    $pct = [math]::Min(100, [math]::Max(0, [int](100.0 * $current / $total)))
-    Write-Progress -Id $script:NacosSetupProgressSlot -Activity "Nacos Setup" -Status "[$current/$total] $desc" -PercentComplete $pct
+    Write-Host ("[{0}/{1}] {2}" -f $current, $total, $desc) -ForegroundColor $Global:ColorSuccess
 }
 
 function Stop-NacosSetupStepProgress() {
-    Write-Progress -Id $script:NacosSetupProgressSlot -Activity "Nacos Setup" -Completed
+    # No-op: simple UI does not use Write-Progress (see Start-NacosSetupStepProgress).
 }
 
 function Test-NacosSetupInteractive {
